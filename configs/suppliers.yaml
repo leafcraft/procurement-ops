@@ -1,0 +1,1216 @@
+# Supplier catalog — available suppliers per SKU.
+# In production replace with a supplier management API
+# (Coupa, SAP Ariba, Oracle Procurement, etc.).
+#
+# Fields per supplier entry:
+#   name              Supplier company name
+#   unit_price        Price per unit (USD)
+#   lead_time_days    Delivery lead time from order placement
+#   reliability       Historical composite score (0.0 – 1.0)
+#                     Combines on-time delivery rate + quality acceptance rate
+#   moq               Minimum order quantity
+#   contact_email     Primary procurement contact
+#   payment_terms     NET30 / NET45 / NET60 / COD / PREPAY
+#   currency          Invoice currency (USD / EUR / CNY / INR)
+#   region            Supplier geographic region (domestic / europe / asia / latam)
+#   certifications    Quality or compliance certifications held
+#
+# Special keys:
+#   default       Fallback when no catalog entry exists for a SKU
+#   performance   Aggregate KPIs refreshed from ERP/SRM on a schedule
+
+# ── SKU-001 : Widget A (components) ──────────────────────────────────────────
+SKU-001:
+  - name: SupplierCo Alpha
+    unit_price: 12.50
+    lead_time_days: 7
+    reliability: 0.95
+    moq: 100
+    contact_email: orders@supplierco-alpha.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, AS9100]
+
+  - name: GlobalParts Ltd
+    unit_price: 11.00
+    lead_time_days: 14
+    reliability: 0.88
+    moq: 500
+    contact_email: procurement@globalparts.com
+    payment_terms: NET45
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: NorthAmerica Parts
+    unit_price: 13.20
+    lead_time_days: 5
+    reliability: 0.93
+    moq: 50
+    contact_email: orders@naparts.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, IATF-16949]
+
+  - name: OceanFreight Ltd
+    unit_price: 9.40
+    lead_time_days: 45
+    reliability: 0.82
+    moq: 2000
+    contact_email: bulk@oceanfreight.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 1045.00
+    lead_time_days: 8
+    reliability: 0.87
+    moq: 50
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-002 : Component B (components) ───────────────────────────────────────
+SKU-002:
+  - name: FastSource Inc
+    unit_price: 8.75
+    lead_time_days: 3
+    reliability: 0.92
+    moq: 50
+    contact_email: orders@fastsource.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: BulkSupply Corp
+    unit_price: 7.20
+    lead_time_days: 21
+    reliability: 0.79
+    moq: 1000
+    contact_email: sales@bulksupply.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: []
+
+  - name: SupplierCo Alpha
+    unit_price: 9.10
+    lead_time_days: 7
+    reliability: 0.95
+    moq: 100
+    contact_email: orders@supplierco-alpha.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, AS9100]
+
+  - name: QuickShip Express
+    unit_price: 11.50
+    lead_time_days: 1
+    reliability: 0.89
+    moq: 25
+    contact_email: urgent@quickship.com
+    payment_terms: COD
+    currency: USD
+    region: domestic
+    certifications: []
+
+  - name: IndoTech Components
+    unit_price: 730.00
+    lead_time_days: 6
+    reliability: 0.87
+    moq: 50
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-003 : Precision Part C (parts) ───────────────────────────────────────
+SKU-003:
+  - name: PrimeParts Co
+    unit_price: 45.00
+    lead_time_days: 5
+    reliability: 0.97
+    moq: 25
+    contact_email: orders@primeparts.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, ISO-13485, AS9100]
+
+  - name: PrecisionMfg Co
+    unit_price: 42.00
+    lead_time_days: 8
+    reliability: 0.96
+    moq: 50
+    contact_email: sales@precisionmfg.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, IATF-16949]
+
+  - name: EuroSource GmbH
+    unit_price: 49.00
+    lead_time_days: 12
+    reliability: 0.98
+    moq: 20
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, DIN-EN-ISO-14001, REACH]
+
+  - name: GlobalParts Ltd
+    unit_price: 38.50
+    lead_time_days: 18
+    reliability: 0.88
+    moq: 200
+    contact_email: procurement@globalparts.com
+    payment_terms: NET45
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 3780.00
+    lead_time_days: 10
+    reliability: 0.87
+    moq: 20
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-004 : Assembly D (assemblies) ────────────────────────────────────────
+SKU-004:
+  - name: SupplierCo Alpha
+    unit_price: 120.00
+    lead_time_days: 10
+    reliability: 0.95
+    moq: 10
+    contact_email: orders@supplierco-alpha.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, AS9100]
+
+  - name: EmergencyParts LLC
+    unit_price: 145.00
+    lead_time_days: 2
+    reliability: 0.90
+    moq: 5
+    contact_email: emergency@emergencyparts.com
+    payment_terms: COD
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: PrecisionMfg Co
+    unit_price: 115.00
+    lead_time_days: 14
+    reliability: 0.96
+    moq: 5
+    contact_email: sales@precisionmfg.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, IATF-16949]
+
+  - name: EuroSource GmbH
+    unit_price: 130.00
+    lead_time_days: 16
+    reliability: 0.98
+    moq: 5
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, DIN-EN-ISO-14001]
+
+  - name: IndoTech Components
+    unit_price: 10050.00
+    lead_time_days: 9
+    reliability: 0.87
+    moq: 5
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-005 : Control Module E (modules) ─────────────────────────────────────
+SKU-005:
+  - name: GlobalParts Ltd
+    unit_price: 33.00
+    lead_time_days: 12
+    reliability: 0.88
+    moq: 100
+    contact_email: procurement@globalparts.com
+    payment_terms: NET45
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: PrimeParts Co
+    unit_price: 36.00
+    lead_time_days: 6
+    reliability: 0.97
+    moq: 50
+    contact_email: orders@primeparts.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, ISO-13485]
+
+  - name: TechComponents Asia
+    unit_price: 29.50
+    lead_time_days: 21
+    reliability: 0.85
+    moq: 200
+    contact_email: sales@techcomponents.cn
+    payment_terms: NET60
+    currency: CNY
+    region: asia
+    certifications: [ISO-9001, RoHS]
+
+  - name: IndoTech Components
+    unit_price: 2750.00
+    lead_time_days: 9
+    reliability: 0.87
+    moq: 100
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-006 : PCB Board F (electronics) ──────────────────────────────────────
+SKU-006:
+  - name: TechComponents Asia
+    unit_price: 48.00
+    lead_time_days: 21
+    reliability: 0.85
+    moq: 100
+    contact_email: sales@techcomponents.cn
+    payment_terms: NET60
+    currency: CNY
+    region: asia
+    certifications: [ISO-9001, RoHS, UL]
+
+  - name: EuroSource GmbH
+    unit_price: 62.00
+    lead_time_days: 10
+    reliability: 0.98
+    moq: 25
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, CE, RoHS, REACH]
+
+  - name: FastSource Inc
+    unit_price: 58.00
+    lead_time_days: 5
+    reliability: 0.92
+    moq: 50
+    contact_email: orders@fastsource.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, UL]
+
+  - name: MegaDistribution
+    unit_price: 44.00
+    lead_time_days: 28
+    reliability: 0.81
+    moq: 500
+    contact_email: pcb@megadist.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 4050.00
+    lead_time_days: 11
+    reliability: 0.87
+    moq: 25
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS, RoHS]
+
+# ── SKU-007 : Pressure Sensor G (electronics) ────────────────────────────────
+SKU-007:
+  - name: PrecisionMfg Co
+    unit_price: 88.00
+    lead_time_days: 12
+    reliability: 0.96
+    moq: 20
+    contact_email: sales@precisionmfg.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, IATF-16949, IP67-rated]
+
+  - name: EuroSource GmbH
+    unit_price: 95.00
+    lead_time_days: 8
+    reliability: 0.98
+    moq: 10
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, CE, ATEX, SIL2]
+
+  - name: EmergencyParts LLC
+    unit_price: 115.00
+    lead_time_days: 2
+    reliability: 0.90
+    moq: 5
+    contact_email: emergency@emergencyparts.com
+    payment_terms: COD
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: TechComponents Asia
+    unit_price: 72.00
+    lead_time_days: 25
+    reliability: 0.85
+    moq: 50
+    contact_email: sales@techcomponents.cn
+    payment_terms: NET60
+    currency: CNY
+    region: asia
+    certifications: [ISO-9001, RoHS]
+
+  - name: IndoTech Components
+    unit_price: 7300.00
+    lead_time_days: 10
+    reliability: 0.87
+    moq: 10
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-008 : Shipping Box H (packaging) ─────────────────────────────────────
+SKU-008:
+  - name: GreenSupply Co
+    unit_price: 1.10
+    lead_time_days: 3
+    reliability: 0.91
+    moq: 500
+    contact_email: orders@greensupply.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [FSC, ISO-14001]
+
+  - name: BulkSupply Corp
+    unit_price: 0.95
+    lead_time_days: 7
+    reliability: 0.79
+    moq: 5000
+    contact_email: sales@bulksupply.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: []
+
+  - name: FastSource Inc
+    unit_price: 1.35
+    lead_time_days: 2
+    reliability: 0.92
+    moq: 200
+    contact_email: orders@fastsource.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 91.00
+    lead_time_days: 6
+    reliability: 0.87
+    moq: 200
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-009 : Ball Bearing I (components) ────────────────────────────────────
+SKU-009:
+  - name: PrecisionMfg Co
+    unit_price: 4.20
+    lead_time_days: 5
+    reliability: 0.96
+    moq: 100
+    contact_email: sales@precisionmfg.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, IATF-16949]
+
+  - name: NorthAmerica Parts
+    unit_price: 3.90
+    lead_time_days: 7
+    reliability: 0.93
+    moq: 200
+    contact_email: orders@naparts.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: GlobalParts Ltd
+    unit_price: 3.20
+    lead_time_days: 18
+    reliability: 0.88
+    moq: 1000
+    contact_email: procurement@globalparts.com
+    payment_terms: NET45
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: BulkSupply Corp
+    unit_price: 2.80
+    lead_time_days: 28
+    reliability: 0.79
+    moq: 5000
+    contact_email: sales@bulksupply.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: []
+
+  - name: IndoTech Components
+    unit_price: 350.00
+    lead_time_days: 5
+    reliability: 0.87
+    moq: 100
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-010 : Stepper Motor J (assemblies) ───────────────────────────────────
+SKU-010:
+  - name: TechComponents Asia
+    unit_price: 55.00
+    lead_time_days: 21
+    reliability: 0.85
+    moq: 20
+    contact_email: sales@techcomponents.cn
+    payment_terms: NET60
+    currency: CNY
+    region: asia
+    certifications: [ISO-9001, CE, RoHS]
+
+  - name: EuroSource GmbH
+    unit_price: 68.00
+    lead_time_days: 10
+    reliability: 0.98
+    moq: 10
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, CE, UL]
+
+  - name: PrecisionMfg Co
+    unit_price: 64.00
+    lead_time_days: 14
+    reliability: 0.96
+    moq: 10
+    contact_email: sales@precisionmfg.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, IATF-16949]
+
+  - name: IndoTech Components
+    unit_price: 4600.00
+    lead_time_days: 12
+    reliability: 0.87
+    moq: 10
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-011 : Motor Controller K (electronics) ───────────────────────────────
+SKU-011:
+  - name: TechComponents Asia
+    unit_price: 195.00
+    lead_time_days: 21
+    reliability: 0.85
+    moq: 10
+    contact_email: sales@techcomponents.cn
+    payment_terms: NET60
+    currency: CNY
+    region: asia
+    certifications: [ISO-9001, RoHS, CE]
+
+  - name: EuroSource GmbH
+    unit_price: 235.00
+    lead_time_days: 12
+    reliability: 0.98
+    moq: 5
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, CE, RoHS, REACH, UL]
+
+  - name: EmergencyParts LLC
+    unit_price: 275.00
+    lead_time_days: 3
+    reliability: 0.90
+    moq: 2
+    contact_email: emergency@emergencyparts.com
+    payment_terms: COD
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: MegaDistribution
+    unit_price: 185.00
+    lead_time_days: 30
+    reliability: 0.81
+    moq: 20
+    contact_email: electronics@megadist.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 16200.00
+    lead_time_days: 12
+    reliability: 0.87
+    moq: 5
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS, RoHS]
+
+# ── SKU-012 : Shielded Cable L (components) ──────────────────────────────────
+SKU-012:
+  - name: SupplierCo Alpha
+    unit_price: 2.60
+    lead_time_days: 7
+    reliability: 0.95
+    moq: 500
+    contact_email: orders@supplierco-alpha.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, UL, RoHS]
+
+  - name: GreenSupply Co
+    unit_price: 2.45
+    lead_time_days: 10
+    reliability: 0.91
+    moq: 200
+    contact_email: orders@greensupply.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, ISO-14001, RoHS]
+
+  - name: BulkSupply Corp
+    unit_price: 1.90
+    lead_time_days: 28
+    reliability: 0.79
+    moq: 5000
+    contact_email: sales@bulksupply.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: []
+
+  - name: IndoTech Components
+    unit_price: 215.00
+    lead_time_days: 6
+    reliability: 0.87
+    moq: 500
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS, RoHS]
+
+# ── SKU-013 : Drive Housing M (assemblies) ───────────────────────────────────
+SKU-013:
+  - name: PrecisionMfg Co
+    unit_price: 78.00
+    lead_time_days: 10
+    reliability: 0.96
+    moq: 10
+    contact_email: sales@precisionmfg.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, IATF-16949]
+
+  - name: NorthAmerica Parts
+    unit_price: 82.00
+    lead_time_days: 8
+    reliability: 0.93
+    moq: 5
+    contact_email: orders@naparts.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: EuroSource GmbH
+    unit_price: 90.00
+    lead_time_days: 14
+    reliability: 0.98
+    moq: 5
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, CE, ISO-14001]
+
+  - name: IndoTech Components
+    unit_price: 6500.00
+    lead_time_days: 9
+    reliability: 0.87
+    moq: 10
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-014 : Power Supply N (electronics) ───────────────────────────────────
+SKU-014:
+  - name: TechComponents Asia
+    unit_price: 82.00
+    lead_time_days: 18
+    reliability: 0.85
+    moq: 20
+    contact_email: sales@techcomponents.cn
+    payment_terms: NET60
+    currency: CNY
+    region: asia
+    certifications: [ISO-9001, RoHS, CE, UL]
+
+  - name: EuroSource GmbH
+    unit_price: 105.00
+    lead_time_days: 10
+    reliability: 0.98
+    moq: 10
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, CE, UL, TUV]
+
+  - name: FastSource Inc
+    unit_price: 98.00
+    lead_time_days: 5
+    reliability: 0.92
+    moq: 10
+    contact_email: orders@fastsource.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, UL]
+
+  - name: NorthAmerica Parts
+    unit_price: 96.00
+    lead_time_days: 7
+    reliability: 0.93
+    moq: 10
+    contact_email: orders@naparts.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, UL]
+
+  - name: IndoTech Components
+    unit_price: 8150.00
+    lead_time_days: 11
+    reliability: 0.87
+    moq: 10
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-015 : Shaft Seal O (components) ──────────────────────────────────────
+SKU-015:
+  - name: SupplierCo Alpha
+    unit_price: 4.50
+    lead_time_days: 5
+    reliability: 0.95
+    moq: 200
+    contact_email: orders@supplierco-alpha.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: NorthAmerica Parts
+    unit_price: 4.30
+    lead_time_days: 7
+    reliability: 0.93
+    moq: 100
+    contact_email: orders@naparts.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: FastSource Inc
+    unit_price: 5.20
+    lead_time_days: 2
+    reliability: 0.92
+    moq: 50
+    contact_email: orders@fastsource.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: GlobalParts Ltd
+    unit_price: 3.60
+    lead_time_days: 14
+    reliability: 0.88
+    moq: 1000
+    contact_email: procurement@globalparts.com
+    payment_terms: NET45
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 370.00
+    lead_time_days: 5
+    reliability: 0.87
+    moq: 100
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-016 : Gear Pump P (assemblies) ───────────────────────────────────────
+SKU-016:
+  - name: PrecisionMfg Co
+    unit_price: 190.00
+    lead_time_days: 14
+    reliability: 0.96
+    moq: 5
+    contact_email: sales@precisionmfg.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, IATF-16949, IP55-rated]
+
+  - name: EuroSource GmbH
+    unit_price: 210.00
+    lead_time_days: 10
+    reliability: 0.98
+    moq: 3
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, CE, ATEX, IP65-rated]
+
+  - name: EmergencyParts LLC
+    unit_price: 240.00
+    lead_time_days: 3
+    reliability: 0.90
+    moq: 2
+    contact_email: emergency@emergencyparts.com
+    payment_terms: COD
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 15800.00
+    lead_time_days: 12
+    reliability: 0.87
+    moq: 5
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS]
+
+# ── SKU-017 : Oil Filter Q (consumables) ─────────────────────────────────────
+SKU-017:
+  - name: GreenSupply Co
+    unit_price: 8.20
+    lead_time_days: 4
+    reliability: 0.91
+    moq: 50
+    contact_email: orders@greensupply.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, ISO-14001]
+
+  - name: BulkSupply Corp
+    unit_price: 6.80
+    lead_time_days: 14
+    reliability: 0.79
+    moq: 500
+    contact_email: sales@bulksupply.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: []
+
+  - name: FastSource Inc
+    unit_price: 9.50
+    lead_time_days: 2
+    reliability: 0.92
+    moq: 25
+    contact_email: orders@fastsource.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 680.00
+    lead_time_days: 5
+    reliability: 0.87
+    moq: 50
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS, ISO-14001]
+
+# ── SKU-018 : Synthetic Lubricant R (consumables) ────────────────────────────
+SKU-018:
+  - name: GreenSupply Co
+    unit_price: 20.00
+    lead_time_days: 4
+    reliability: 0.91
+    moq: 50
+    contact_email: orders@greensupply.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, ISO-14001, NSF-H1]
+
+  - name: SupplierCo Alpha
+    unit_price: 23.00
+    lead_time_days: 5
+    reliability: 0.95
+    moq: 20
+    contact_email: orders@supplierco-alpha.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, NSF-H1]
+
+  - name: BulkSupply Corp
+    unit_price: 17.50
+    lead_time_days: 18
+    reliability: 0.79
+    moq: 500
+    contact_email: sales@bulksupply.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: []
+
+  - name: IndoTech Components
+    unit_price: 1680.00
+    lead_time_days: 6
+    reliability: 0.87
+    moq: 20
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS, NSF-H1]
+
+# ── SKU-019 : M8 Hex Bolt Set S (fasteners) ──────────────────────────────────
+SKU-019:
+  - name: NorthAmerica Parts
+    unit_price: 0.38
+    lead_time_days: 5
+    reliability: 0.93
+    moq: 1000
+    contact_email: orders@naparts.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, DIN-931]
+
+  - name: BulkSupply Corp
+    unit_price: 0.28
+    lead_time_days: 21
+    reliability: 0.79
+    moq: 10000
+    contact_email: sales@bulksupply.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: []
+
+  - name: GlobalParts Ltd
+    unit_price: 0.31
+    lead_time_days: 14
+    reliability: 0.88
+    moq: 5000
+    contact_email: procurement@globalparts.com
+    payment_terms: NET45
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 31.00
+    lead_time_days: 6
+    reliability: 0.87
+    moq: 1000
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS, DIN-931]
+
+# ── SKU-020 : TFT Display T (electronics) ────────────────────────────────────
+SKU-020:
+  - name: TechComponents Asia
+    unit_price: 125.00
+    lead_time_days: 25
+    reliability: 0.85
+    moq: 20
+    contact_email: sales@techcomponents.cn
+    payment_terms: NET60
+    currency: CNY
+    region: asia
+    certifications: [ISO-9001, RoHS, CE]
+
+  - name: EuroSource GmbH
+    unit_price: 155.00
+    lead_time_days: 14
+    reliability: 0.98
+    moq: 10
+    contact_email: export@eurosource.de
+    payment_terms: NET45
+    currency: EUR
+    region: europe
+    certifications: [ISO-9001, CE, RoHS, UL]
+
+  - name: FastSource Inc
+    unit_price: 148.00
+    lead_time_days: 7
+    reliability: 0.92
+    moq: 10
+    contact_email: orders@fastsource.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: [ISO-9001, UL]
+
+  - name: MegaDistribution
+    unit_price: 118.00
+    lead_time_days: 35
+    reliability: 0.81
+    moq: 50
+    contact_email: displays@megadist.com
+    payment_terms: NET60
+    currency: USD
+    region: asia
+    certifications: [ISO-9001]
+
+  - name: IndoTech Components
+    unit_price: 10400.00
+    lead_time_days: 12
+    reliability: 0.87
+    moq: 10
+    contact_email: procurement@indotech.in
+    payment_terms: NET30
+    currency: INR
+    region: india
+    certifications: [ISO-9001, BIS, RoHS, UL]
+
+# ── Fallback — used when no catalog entry exists for the requested SKU ────────
+default:
+  - name: GeneralSupply Co
+    unit_price: 0.0
+    lead_time_days: 14
+    reliability: 0.80
+    moq: 100
+    contact_email: orders@generalsupply.com
+    payment_terms: NET30
+    currency: USD
+    region: domestic
+    certifications: []
+    note: No catalog entry — contact procurement for pricing before placing order
+
+# ── Supplier performance metrics ──────────────────────────────────────────────
+# Refreshed from ERP/SRM on a scheduled basis.
+# Used by supply_report_agent to compute fleet-level KPIs.
+#
+# Fields:
+#   on_time_delivery_rate   Fraction of orders delivered on or before due date
+#   defect_rate             Fraction of delivered units rejected at QC
+#   average_lead_time_days  Rolling average actual lead time (last 90 days)
+#   fill_rate               Fraction of ordered quantity actually shipped
+#   invoice_accuracy        Fraction of invoices matching PO without disputes
+#   last_updated            Date this record was last refreshed from ERP
+
+performance:
+  SupplierCo Alpha:
+    on_time_delivery_rate: 0.95
+    defect_rate: 0.012
+    average_lead_time_days: 7.2
+    fill_rate: 0.98
+    invoice_accuracy: 0.99
+    last_updated: "2026-04-01"
+
+  GlobalParts Ltd:
+    on_time_delivery_rate: 0.88
+    defect_rate: 0.025
+    average_lead_time_days: 14.5
+    fill_rate: 0.94
+    invoice_accuracy: 0.96
+    last_updated: "2026-04-01"
+
+  FastSource Inc:
+    on_time_delivery_rate: 0.92
+    defect_rate: 0.018
+    average_lead_time_days: 3.1
+    fill_rate: 0.97
+    invoice_accuracy: 0.98
+    last_updated: "2026-04-01"
+
+  BulkSupply Corp:
+    on_time_delivery_rate: 0.79
+    defect_rate: 0.035
+    average_lead_time_days: 22.0
+    fill_rate: 0.91
+    invoice_accuracy: 0.93
+    last_updated: "2026-04-01"
+
+  PrimeParts Co:
+    on_time_delivery_rate: 0.97
+    defect_rate: 0.008
+    average_lead_time_days: 5.3
+    fill_rate: 0.99
+    invoice_accuracy: 0.99
+    last_updated: "2026-04-01"
+
+  EmergencyParts LLC:
+    on_time_delivery_rate: 0.90
+    defect_rate: 0.020
+    average_lead_time_days: 2.0
+    fill_rate: 0.95
+    invoice_accuracy: 0.97
+    last_updated: "2026-04-01"
+
+  TechComponents Asia:
+    on_time_delivery_rate: 0.85
+    defect_rate: 0.030
+    average_lead_time_days: 21.8
+    fill_rate: 0.93
+    invoice_accuracy: 0.94
+    last_updated: "2026-04-01"
+
+  EuroSource GmbH:
+    on_time_delivery_rate: 0.98
+    defect_rate: 0.006
+    average_lead_time_days: 10.5
+    fill_rate: 0.99
+    invoice_accuracy: 1.00
+    last_updated: "2026-04-01"
+
+  NorthAmerica Parts:
+    on_time_delivery_rate: 0.93
+    defect_rate: 0.015
+    average_lead_time_days: 5.8
+    fill_rate: 0.97
+    invoice_accuracy: 0.98
+    last_updated: "2026-04-01"
+
+  PrecisionMfg Co:
+    on_time_delivery_rate: 0.96
+    defect_rate: 0.009
+    average_lead_time_days: 9.1
+    fill_rate: 0.98
+    invoice_accuracy: 0.99
+    last_updated: "2026-04-01"
+
+  GreenSupply Co:
+    on_time_delivery_rate: 0.91
+    defect_rate: 0.014
+    average_lead_time_days: 4.2
+    fill_rate: 0.96
+    invoice_accuracy: 0.97
+    last_updated: "2026-04-01"
+
+  QuickShip Express:
+    on_time_delivery_rate: 0.89
+    defect_rate: 0.022
+    average_lead_time_days: 1.2
+    fill_rate: 0.94
+    invoice_accuracy: 0.96
+    last_updated: "2026-04-01"
+
+  OceanFreight Ltd:
+    on_time_delivery_rate: 0.82
+    defect_rate: 0.028
+    average_lead_time_days: 46.0
+    fill_rate: 0.96
+    invoice_accuracy: 0.95
+    last_updated: "2026-04-01"
+
+  MegaDistribution:
+    on_time_delivery_rate: 0.81
+    defect_rate: 0.032
+    average_lead_time_days: 29.5
+    fill_rate: 0.92
+    invoice_accuracy: 0.93
+    last_updated: "2026-04-01"
+
+  GeneralSupply Co:
+    on_time_delivery_rate: 0.80
+    defect_rate: 0.030
+    average_lead_time_days: 14.0
+    fill_rate: 0.90
+    invoice_accuracy: 0.94
+    last_updated: "2026-04-01"
+
+  IndoTech Components:
+    on_time_delivery_rate: 0.87
+    defect_rate: 0.020
+    average_lead_time_days: 8.5
+    fill_rate: 0.93
+    invoice_accuracy: 0.95
+    last_updated: "2026-05-01"

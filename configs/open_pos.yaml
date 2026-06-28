@@ -1,0 +1,258 @@
+PO-20260515-1M6O:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-20'
+  issued_at: '2026-05-15T09:47:01.102761+00:00'
+  lines:
+  - currency: USD
+    description: Widget A
+    last_received_at: null
+    quantity_ordered: 126
+    quantity_received: 0
+    sku: SKU-001
+    unit_price: 13.2
+  po_number: PO-20260515-1M6O
+  status: open
+  supplier: NorthAmerica Parts
+PO-20260515-23O3:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-17'
+  issued_at: '2026-05-15T10:35:47.079145+00:00'
+  lines:
+  - currency: USD
+    description: Pressure Sensor G
+    last_received_at: null
+    quantity_ordered: 12
+    quantity_received: 0
+    sku: SKU-007
+    unit_price: 115.0
+  po_number: PO-20260515-23O3
+  status: open
+  supplier: EmergencyParts LLC
+PO-20260515-54Q6:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-18'
+  issued_at: '2026-05-15T09:56:08.460238+00:00'
+  lines:
+  - currency: USD
+    description: Assembly D
+    last_received_at: null
+    quantity_ordered: 45
+    quantity_received: 0
+    sku: SKU-004
+    unit_price: 145.0
+  - currency: USD
+    description: Pressure Sensor G
+    last_received_at: null
+    quantity_ordered: 126
+    quantity_received: 0
+    sku: SKU-007
+    unit_price: 115.0
+  - currency: USD
+    description: Motor Controller K
+    last_received_at: null
+    quantity_ordered: 46
+    quantity_received: 0
+    sku: SKU-011
+    unit_price: 275.0
+  po_number: PO-20260515-54Q6
+  status: open
+  supplier: EmergencyParts LLC
+PO-20260515-8M4A:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-20'
+  issued_at: '2026-05-15T11:19:02.581222+00:00'
+  lines:
+  - currency: USD
+    description: Widget A
+    last_received_at: null
+    quantity_ordered: 50
+    quantity_received: 0
+    sku: SKU-001
+    unit_price: 13.2
+  po_number: PO-20260515-8M4A
+  status: open
+  supplier: NorthAmerica Parts
+PO-20260515-EI95:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-22'
+  issued_at: '2026-05-15T09:56:08.460238+00:00'
+  lines:
+  - currency: USD
+    description: Component B
+    last_received_at: null
+    quantity_ordered: 50
+    quantity_received: 0
+    sku: SKU-002
+    unit_price: 8.75
+  - currency: USD
+    description: Shaft Seal O
+    last_received_at: null
+    quantity_ordered: 100
+    quantity_received: 0
+    sku: SKU-015
+    unit_price: 5.2
+  - currency: USD
+    description: PCB Board F
+    last_received_at: null
+    quantity_ordered: 81
+    quantity_received: 0
+    sku: SKU-006
+    unit_price: 58.0
+  - currency: USD
+    description: Oil Filter Q
+    last_received_at: null
+    quantity_ordered: 25
+    quantity_received: 0
+    sku: SKU-017
+    unit_price: 9.5
+  - currency: USD
+    description: TFT Display T
+    last_received_at: null
+    quantity_ordered: 75
+    quantity_received: 0
+    sku: SKU-020
+    unit_price: 148.0
+  po_number: PO-20260515-EI95
+  status: open
+  supplier: FastSource Inc
+PO-20260515-H1H8:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-23'
+  issued_at: '2026-05-15T09:56:08.460238+00:00'
+  lines:
+  - currency: USD
+    description: Widget A
+    last_received_at: null
+    quantity_ordered: 126
+    quantity_received: 0
+    sku: SKU-001
+    unit_price: 13.2
+  - currency: USD
+    description: Drive Housing M
+    last_received_at: null
+    quantity_ordered: 18
+    quantity_received: 0
+    sku: SKU-013
+    unit_price: 82.0
+  po_number: PO-20260515-H1H8
+  status: open
+  supplier: NorthAmerica Parts
+PO-20260515-LQO4:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-17'
+  issued_at: '2026-05-15T11:19:02.581222+00:00'
+  lines:
+  - currency: USD
+    description: Pressure Sensor G
+    last_received_at: null
+    quantity_ordered: 12
+    quantity_received: 0
+    sku: SKU-007
+    unit_price: 115.0
+  po_number: PO-20260515-LQO4
+  status: open
+  supplier: EmergencyParts LLC
+PO-20260515-M066:
+  approval_reference: APPROVED
+  closed_at: '2026-05-15T12:02:28.896922+00:00'
+  currency: USD
+  expected_delivery_date: '2026-05-18'
+  issued_at: '2026-05-15T11:50:24.050202+00:00'
+  last_receipt_at: '2026-05-15T12:02:28.896922+00:00'
+  lines:
+  - currency: USD
+    description: Assembly D
+    last_received_at: '2026-05-15T12:02:28.896922+00:00'
+    quantity_ordered: 5
+    quantity_received: 5
+    sku: SKU-004
+    unit_price: 145.0
+  - currency: USD
+    description: Motor Controller K
+    last_received_at: '2026-05-15T12:02:28.896922+00:00'
+    quantity_ordered: 3
+    quantity_received: 3
+    sku: SKU-011
+    unit_price: 275.0
+  po_number: PO-20260515-M066
+  status: closed
+  supplier: EmergencyParts LLC
+PO-20260515-RGRG:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-20'
+  issued_at: '2026-05-15T09:56:08.460238+00:00'
+  lines:
+  - currency: USD
+    description: Ball Bearing I
+    last_received_at: null
+    quantity_ordered: 100
+    quantity_received: 0
+    sku: SKU-009
+    unit_price: 4.2
+  po_number: PO-20260515-RGRG
+  status: open
+  supplier: PrecisionMfg Co
+PO-20260515-W63V:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-20'
+  issued_at: '2026-05-15T10:35:47.079145+00:00'
+  lines:
+  - currency: USD
+    description: Widget A
+    last_received_at: null
+    quantity_ordered: 50
+    quantity_received: 0
+    sku: SKU-001
+    unit_price: 13.2
+  po_number: PO-20260515-W63V
+  status: open
+  supplier: NorthAmerica Parts
+PO-20260515-YICP:
+  approval_reference: APPROVED
+  currency: USD
+  expected_delivery_date: '2026-05-18'
+  issued_at: '2026-05-15T09:47:01.102761+00:00'
+  lines:
+  - currency: USD
+    description: Component B
+    last_received_at: null
+    quantity_ordered: 50
+    quantity_received: 0
+    sku: SKU-002
+    unit_price: 8.75
+  po_number: PO-20260515-YICP
+  status: open
+  supplier: FastSource Inc
+PO-20260515-ZNIR:
+  approval_reference: APPROVED
+  currency: INR
+  expected_delivery_date: '2026-05-27'
+  issued_at: '2026-05-15T12:12:34.635804+00:00'
+  last_receipt_at: '2026-05-15T12:14:46.154817+00:00'
+  lines:
+  - currency: USD
+    description: Assembly D
+    last_received_at: '2026-05-15T12:14:46.154817+00:00'
+    quantity_ordered: 5
+    quantity_received: 1
+    sku: SKU-004
+    unit_price: 10050.0
+  - currency: USD
+    description: Motor Controller K
+    last_received_at: '2026-05-15T12:14:46.154817+00:00'
+    quantity_ordered: 5
+    quantity_received: 1
+    sku: SKU-011
+    unit_price: 16200.0
+  po_number: PO-20260515-ZNIR
+  status: partially_received
+  supplier: IndoTech Components

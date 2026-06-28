@@ -1,0 +1,260 @@
+SKU-001:
+  abc_class: A
+  avg_daily_demand: 8
+  category: components
+  lead_time_days: 7
+  max_stock: 500
+  name: Widget A
+  on_hand: 15
+  reorder_point: 50
+  safety_stock: 20
+  storage_location: A-01-03
+  unit_cost: 10.0
+  unit_of_measure: EA
+SKU-002:
+  abc_class: B
+  avg_daily_demand: 5
+  category: components
+  lead_time_days: 3
+  max_stock: 300
+  name: Component B
+  on_hand: 5
+  reorder_point: 30
+  safety_stock: 10
+  storage_location: A-02-07
+  unit_cost: 6.5
+  unit_of_measure: EA
+SKU-003:
+  abc_class: A
+  avg_daily_demand: 7
+  category: parts
+  lead_time_days: 5
+  max_stock: 600
+  name: Precision Part C
+  on_hand: 200
+  reorder_point: 75
+  safety_stock: 25
+  storage_location: A-03-01
+  unit_cost: 40.0
+  unit_of_measure: EA
+SKU-004:
+  abc_class: A
+  avg_daily_demand: 2
+  category: assemblies
+  lead_time_days: 10
+  max_stock: 100
+  name: Assembly D
+  on_hand: 11
+  reorder_point: 20
+  safety_stock: 5
+  storage_location: C-01-02
+  unit_cost: 100.0
+  unit_of_measure: EA
+SKU-005:
+  abc_class: B
+  avg_daily_demand: 4
+  category: modules
+  lead_time_days: 12
+  max_stock: 250
+  name: Control Module E
+  on_hand: 80
+  reorder_point: 60
+  safety_stock: 15
+  storage_location: C-03-08
+  unit_cost: 30.0
+  unit_of_measure: EA
+SKU-006:
+  abc_class: A
+  avg_daily_demand: 3
+  category: electronics
+  lead_time_days: 18
+  max_stock: 300
+  name: PCB Board F
+  on_hand: 35
+  reorder_point: 60
+  safety_stock: 15
+  storage_location: B-02-05
+  unit_cost: 55.0
+  unit_of_measure: EA
+SKU-007:
+  abc_class: A
+  avg_daily_demand: 4
+  category: electronics
+  lead_time_days: 14
+  max_stock: 200
+  name: Pressure Sensor G
+  on_hand: 3
+  reorder_point: 40
+  safety_stock: 10
+  storage_location: B-03-11
+  unit_cost: 85.0
+  unit_of_measure: EA
+SKU-008:
+  abc_class: C
+  avg_daily_demand: 40
+  category: packaging
+  lead_time_days: 3
+  max_stock: 2000
+  name: Shipping Box H
+  on_hand: 500
+  reorder_point: 200
+  safety_stock: 75
+  storage_location: D-02-01
+  unit_cost: 1.2
+  unit_of_measure: BOX
+SKU-009:
+  abc_class: C
+  avg_daily_demand: 6
+  category: components
+  lead_time_days: 5
+  max_stock: 500
+  name: Ball Bearing I
+  on_hand: 20
+  reorder_point: 40
+  safety_stock: 10
+  storage_location: A-06-09
+  unit_cost: 3.8
+  unit_of_measure: EA
+SKU-010:
+  abc_class: B
+  avg_daily_demand: 2
+  category: assemblies
+  lead_time_days: 14
+  max_stock: 150
+  name: Stepper Motor J
+  on_hand: 45
+  reorder_point: 30
+  safety_stock: 10
+  storage_location: C-04-03
+  unit_cost: 62.0
+  unit_of_measure: EA
+SKU-011:
+  abc_class: A
+  avg_daily_demand: 1
+  category: electronics
+  lead_time_days: 21
+  max_stock: 80
+  name: Motor Controller K
+  on_hand: 7
+  reorder_point: 15
+  safety_stock: 5
+  storage_location: B-04-02
+  unit_cost: 220.0
+  unit_of_measure: EA
+SKU-012:
+  abc_class: C
+  avg_daily_demand: 20
+  category: components
+  lead_time_days: 7
+  max_stock: 1000
+  name: Shielded Cable L
+  on_hand: 300
+  reorder_point: 100
+  safety_stock: 30
+  storage_location: A-07-02
+  unit_cost: 2.4
+  unit_of_measure: M
+SKU-013:
+  abc_class: B
+  avg_daily_demand: 1
+  category: assemblies
+  lead_time_days: 12
+  max_stock: 80
+  name: Drive Housing M
+  on_hand: 15
+  reorder_point: 25
+  safety_stock: 8
+  storage_location: C-02-06
+  unit_cost: 75.0
+  unit_of_measure: EA
+SKU-014:
+  abc_class: A
+  avg_daily_demand: 3
+  category: electronics
+  lead_time_days: 10
+  max_stock: 200
+  name: Power Supply N
+  on_hand: 60
+  reorder_point: 40
+  safety_stock: 12
+  storage_location: B-01-09
+  unit_cost: 95.0
+  unit_of_measure: EA
+SKU-015:
+  abc_class: B
+  avg_daily_demand: 9
+  category: components
+  lead_time_days: 5
+  max_stock: 400
+  name: Shaft Seal O
+  on_hand: 2
+  reorder_point: 60
+  safety_stock: 15
+  storage_location: A-05-14
+  unit_cost: 4.25
+  unit_of_measure: EA
+SKU-016:
+  abc_class: A
+  avg_daily_demand: 1
+  category: assemblies
+  lead_time_days: 18
+  max_stock: 60
+  name: Gear Pump P
+  on_hand: 25
+  reorder_point: 15
+  safety_stock: 5
+  storage_location: C-05-04
+  unit_cost: 185.0
+  unit_of_measure: EA
+SKU-017:
+  abc_class: C
+  avg_daily_demand: 3
+  category: consumables
+  lead_time_days: 4
+  max_stock: 300
+  name: Oil Filter Q
+  on_hand: 30
+  reorder_point: 50
+  safety_stock: 15
+  storage_location: D-01-04
+  unit_cost: 8.5
+  unit_of_measure: EA
+SKU-018:
+  abc_class: C
+  avg_daily_demand: 8
+  category: consumables
+  lead_time_days: 4
+  max_stock: 500
+  name: Synthetic Lubricant R
+  on_hand: 120
+  reorder_point: 80
+  safety_stock: 25
+  storage_location: D-03-07
+  unit_cost: 22.0
+  unit_of_measure: KG
+SKU-019:
+  abc_class: C
+  avg_daily_demand: 60
+  category: fasteners
+  lead_time_days: 5
+  max_stock: 5000
+  name: M8 Hex Bolt Set S
+  on_hand: 800
+  reorder_point: 500
+  safety_stock: 150
+  storage_location: A-08-15
+  unit_cost: 0.35
+  unit_of_measure: EA
+SKU-020:
+  abc_class: A
+  avg_daily_demand: 2
+  category: electronics
+  lead_time_days: 25
+  max_stock: 150
+  name: TFT Display T
+  on_hand: 22
+  reorder_point: 35
+  safety_stock: 10
+  storage_location: B-05-01
+  unit_cost: 140.0
+  unit_of_measure: EA

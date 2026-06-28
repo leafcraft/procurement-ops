@@ -1,0 +1,581 @@
+name: "procurement-ops"
+version: 1.0.0
+architecture: managed_mesh
+environment: development
+debug: true
+log_level: INFO
+redis:
+  session_ttl: 7200
+  host: "${REDIS_HOST:localhost}"
+  port: ${REDIS_PORT:6379}
+  password: "${REDIS_PASSWORD:}"
+auto_discover:
+  directory: ./agency
+  pattern: '*_agent.py'
+manager:
+  coordination_rules:
+    human_input_rules:
+      max_concurrent_requests: 3
+      max_agent_requests: 5
+      enable_request_queuing: true
+    timeout_rules:
+      max_timeouts_before_escalation: 2
+      timeout_escalation_enabled: true
+      escalation_notify_managers: true
+    workflow_pause_rules:
+      max_pause_duration_minutes: 30
+      max_concurrent_paused_workflows: 2
+      pause_monitoring_enabled: true
+    human_response_rules:
+      approval:
+        requires_manager_review: false
+        auto_escalate: false
+      escalation:
+        requires_manager_review: true
+        auto_escalate: true
+      timeout:
+        requires_manager_review: true
+        auto_escalate: false
+  escalation:
+    targets: []
+    auto_escalate:
+      max_retries: 3
+      max_errors_per_session: 5
+      timeout_threshold: 120
+  routing:
+    mode: learning
+    memory_size: 100
+    confidence_threshold: 0.4
+    fallback: all
+    decay_days: 30
+  enabled: true
+  model: gpt-4o-mini
+  domain: generic
+mesh:
+  call_timeout: 150
+entry_points:
+- name: process_order
+  target: order_intake_agent
+  description: Main entry — parses incoming orders and initiates supply chain workflow
+  condition: ''
+- name: manager_contact
+  target: operations_manager
+  description: Human-initiated — operations manager contacts the mesh via channel/webhook
+  condition: ''
+- name: check_inventory
+  target: inventory_agent
+  description: Direct inventory check — skips intake and compliance, goes straight
+    to forecast/supplier/logistics
+  condition: ''
+- name: find_suppliers
+  target: supplier_agent
+  description: Direct supplier research — ad-hoc supplier evaluation
+  condition: ''
+- name: plan_logistics
+  target: logistics_agent
+  description: Direct logistics planning — bypass upstream pipeline
+  condition: ''
+- name: supply_report
+  target: supply_report_agent
+  description: On-demand supply chain health report (also runs on daily cron)
+  condition: ''
+- name: receive_goods
+  target: grn_agent
+  description: Goods receipt — confirm delivery against a PO, update inventory on_hand
+  condition: ''
+# ── Lyzr-inspired entry points (added in 2.3.x) ──
+- name: trade_compliance_screen
+  target: trade_compliance_agent
+  description: Screen a supplier against OFAC/BIS/EU/UK/UN sanctions lists + conflict-minerals risk
+  condition: ''
+- name: tariff_classify
+  target: tariff_classifier_agent
+  description: HTS code lookup + duty / landed-cost estimation for international PO line items
+  condition: ''
+agents:
+  operations_manager:
+    name: operations_manager
+    agent_type: human
+    communication_type: dual
+    can_call:
+    # APPROVED path — unchanged: a real human 'responded' (and did not reject)
+    # is the ONLY way the order proceeds to the supply-chain pipeline.
+    - agent: inventory_agent
+      condition: calling_agent_response.human_decision == 'responded' and calling_agent_response.human_message
+        != 'rejected'
+    # DEFAULT-DENY on timeout: an unanswered approval is HELD for the human —
+    # NOT auto-approved. The held order is recorded to the WORM audit sink as a
+    # "held, awaiting approval" terminus, never dropped, never auto-proceeded.
+    - agent: procurement_audit_logger_agent
+      condition: calling_agent_response.human_message == 'held_for_review' or calling_agent_response.human_message
+        == 'rejected'
+    is_human_powered: true
+    human_interface: default
+    human_timeout_seconds: 600
+    webhook_config:
+      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
+      outbound_headers:
+        Content-Type: application/json
+      outbound_timeout: 30
+      inbound_endpoint: /webhook/process_order
+      max_retries: 1
+      retry_delay: 2
+    fallback_on_timeout: true
+    fallback_response:
+      human_decision: held
+      message: held_for_review
+      human_message: held_for_review
+      note: Operations manager did not respond — order HELD for the human, NOT auto-approved (default-deny)
+    yields:
+      request_data: object
+      human_decision: string
+      human_message: string
+      items: list
+      urgency: string
+      order_summary: string
+      preferred_region: string
+    inputs:
+      order_message: string
+      order_type: string
+      items: list
+      urgency: string
+      preferred_region: string
+      po_number: string
+      discrepancies: list
+      quality_incidents: list
+  order_intake_agent:
+    name: order_intake_agent
+    agent_type: llm
+    communication_type: dual
+    can_call:
+    - agent: operations_manager
+    description: Parses incoming orders, assesses urgency/risks, and runs rule-based
+      compliance screening — all orders go to operations_manager for approval
+    model: gpt-4o
+    prompt: |
+      You are a supply chain order intake specialist. Analyze the incoming message
+      and extract a structured order. Return ONLY a valid JSON object — no other text.
+
+      JSON schema:
+      {
+        "order_summary": "<one-line summary of the order>",
+        "items": [
+          {"sku": "<SKU-XXX>", "quantity": <integer>, "description": "<item name>"}
+        ],
+        "urgency": "<critical|high|normal>",
+        "order_type": "<purchase|restock|emergency>",
+        "risk_flags": ["<flag>"],
+        "detected_risk_level": "<normal|elevated|high>"
+      }
+
+      Urgency rules:
+        critical — delivery required within 24 hours
+        high     — delivery required within 72 hours
+        normal   — standard lead time acceptable
+
+      Valid risk flags:
+        single_supplier_dependency, high_quantity_order,
+        compliance_review_required, new_supplier_required,
+        budget_threshold_exceeded, unverified_destination,
+        unverified_sku
+
+      Tools available — use them before finalising the JSON:
+        1. validate_skus(items)      — confirm SKUs exist in inventory; add
+                                       'unverified_sku' flag for any unknown ones
+        2. estimate_order_value(items) — get estimated total cost; add
+                                         'budget_threshold_exceeded' flag if
+                                         result exceeds $50,000
+        3. get_sku_details(sku)      — look up stock status, category and ABC
+                                       class for a specific SKU when needed
+
+      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
+      {"order_summary": "", "items": [], "urgency": "", "order_type": "", "risk_flags": [], "detected_risk_level": "", "compliance_status": "", "compliance_issues": [], "requires_approval": false, "estimated_order_value": 0, "preferred_region": "", "order_message": "", "status": ""}
+    temperature: 0.3
+    enable_prompt_caching: true
+    tools:
+    - validate_skus
+    - estimate_order_value
+    - get_sku_details
+    tool_categories:
+    - "procurement-ops"
+    context_parts:
+      sentiment_analysis: this is for test context
+      guardrails: this is for test context
+    tool_choice: auto
+    max_tool_calls_per_message: 3
+    allow_parallel_tool_calls: true
+    tool_call_timeout: 3
+    parallel: true
+    yields:
+      order_summary: string
+      items: list
+      urgency: string
+      order_type: string
+      risk_flags: list
+      detected_risk_level: string
+      compliance_status: string
+      compliance_issues: list
+      requires_approval: boolean
+      estimated_order_value: number   # set by enforce_approval_floor @chain
+      preferred_region: string
+      order_message: string   # identity passthrough — operations_manager inputs
+      status: string
+    inputs:
+      message: string
+      preferred_region: string
+    memory:
+      strategy: relevance
+      limit: 10
+      cross_session: true
+  inventory_agent:
+    name: inventory_agent
+    agent_type: programmatic
+    communication_type: chain
+    can_call:
+    - agent: supplier_agent
+      condition: calling_agent_response.item_count > 0
+    description: Checks inventory levels, categorizes stock status, and computes
+      optimised order quantities (merged from demand_forecast_agent)
+    parallel: true
+    max_concurrent: 3
+    yields:
+      inventory_items: list
+      critical_items: list
+      item_count: number
+      critical_count: number
+      low_count: number
+      reorder_needed: boolean
+      urgency: string
+      alert: string
+      total_forecasted_units: number
+      adjusted_count: number
+      quarter_end_uplift_applied: boolean
+      is_scheduled_run: boolean
+      preferred_region: string
+      status: string
+    inputs:
+      items: list
+      preferred_region: string
+  supplier_agent:
+    name: supplier_agent
+    agent_type: programmatic
+    communication_type: chain
+    can_call:
+    - agent: logistics_agent
+    description: Scores and ranks suppliers per SKU using composite scoring
+      (reliability 40%, lead time 35%, price 25%) — converted from LLM to programmatic
+    yields:
+      suppliers: list
+      best_by_sku: object
+      recommended_supplier: string
+      estimated_lead_time_days: number
+      estimated_cost: number
+      analysis: object
+      report: object
+      inventory_items: list
+      critical_items: list
+      is_scheduled_run: boolean
+      preferred_region: string
+      status: string
+    inputs:
+      inventory_data: object
+      items: list
+      preferred_region: string
+  logistics_agent:
+    name: logistics_agent
+    agent_type: llm
+    communication_type: chain
+    can_call:
+    - agent: po_approval_agent
+    description: Plans procurement and fulfillment strategy from inventory + supplier
+      data
+    model: gpt-4o-mini
+    prompt: |
+      You are a logistics and procurement strategist. Using the inventory status and
+      supplier analysis provided, create an optimal fulfillment plan. Balance: total
+      cost minimization, lead time reduction, supply continuity risk, and budget
+      compliance. Produce a concrete, priority-ordered procurement plan with clear
+      rationale for each decision. Flag any items requiring immediate action.
+
+      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
+      {"procurement_plan": [], "total_estimated_cost": 0, "fulfillment_timeline_days": 0, "risk_assessment": "", "priority_score": 0, "next_steps": [], "recommended_supplier": "", "supplier_source": "", "supplier_confidence": 0, "critical_items_count": 0, "skipped_agents": [], "is_scheduled_run": false, "source_data": {}, "procurement_report": {}, "alerts": {}, "status": ""}
+    temperature: 0.3
+    max_tokens: 1200
+    optimization_strategy: performance
+    wait_for: supplier_agent
+    wait_for_timeout: 120
+    yields:
+      procurement_plan: list
+      total_estimated_cost: number
+      fulfillment_timeline_days: number
+      risk_assessment: string
+      priority_score: number
+      next_steps: list
+      recommended_supplier: string
+      supplier_source: string
+      supplier_confidence: number
+      critical_items_count: number
+      skipped_agents: list
+      is_scheduled_run: boolean
+      source_data: object
+      procurement_report: object
+      alerts: object
+      status: string
+    inputs:
+      inventory_data: object
+      supplier_data: object
+  po_approval_agent:
+    name: po_approval_agent
+    agent_type: human
+    communication_type: dual
+    can_call:
+    # APPROVED path — unchanged: a real human 'responded' (and did not reject)
+    # is the ONLY way a purchase order is issued (a financial commitment).
+    - agent: purchase_order_agent
+      condition: calling_agent_response.human_decision == 'responded' and calling_agent_response.human_message
+        != 'rejected'
+    # DEFAULT-DENY on timeout: an unanswered approval is HELD for the human —
+    # NOT auto-approved, so NO purchase order is auto-issued. The held PO is
+    # recorded to the WORM audit sink as a "held, awaiting approval" terminus.
+    - agent: procurement_audit_logger_agent
+      condition: calling_agent_response.human_message == 'held_for_review' or calling_agent_response.human_message
+        == 'rejected'
+    description: |
+      Procurement plan ready for approval. Orders over $5,000 require finance sign-off.
+      Reply *approved* to issue purchase orders or *rejected* to cancel.
+    is_human_powered: true
+    human_interface: default
+    human_timeout_seconds: 600
+    webhook_config:
+      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
+      outbound_headers:
+        Content-Type: application/json
+      outbound_timeout: 30
+      inbound_endpoint: /webhook/process_order
+      max_retries: 1
+      retry_delay: 2
+    fallback_on_timeout: true
+    fallback_response:
+      human_decision: held
+      message: held_for_review
+      human_message: held_for_review
+      note: No approver responded — purchase order HELD for the human, NOT auto-approved (default-deny). No PO is auto-issued.
+    yields:
+      human_decision: string
+      human_message: string
+      human_data: object
+      original_webhook_data: object
+    inputs:
+      procurement_plan: list
+      total_estimated_cost: number
+      risk_assessment: string
+      recommended_supplier: string
+      is_scheduled_run: boolean
+  purchase_order_agent:
+    name: purchase_order_agent
+    agent_type: programmatic
+    communication_type: chain
+    description: Generates formal purchase orders from the approved procurement plan
+    can_call:
+    # Terminal: every issued PO is recorded to the WORM audit sink — the
+    # outcome of the human-approved path is the audited terminus.
+    - agent: procurement_audit_logger_agent
+    yields:
+      purchase_orders: list
+      po_numbers: list
+      pdf_paths: list
+      total_po_value: number
+      total_po_value_formatted: string
+      supplier_count: number
+      line_count: number
+      issued_at: string
+      approval_reference: string
+      validation_errors: list   # set by register_valid_pos @chain floor
+      status: string
+    inputs:
+      procurement_plan: list
+      recommended_supplier: string
+      is_scheduled_run: boolean
+      human_message: string
+      session_id: string
+  supply_report_agent:
+    name: supply_report_agent
+    agent_type: programmatic
+    communication_type: chain
+    can_call:
+    - agent: supplier_agent
+      condition: calling_agent_response.status == 'report_generated'
+    description: Generates daily supply chain KPI reports and chains through forecast
+      → supplier → logistics → PO for a fully automated daily procurement run
+    wake_up: 0 8 * * *
+    yields:
+      report: string
+      generated_at: string
+      checks: object
+      metrics: object
+      inventory_items: list
+      item_count: number
+      critical_items: list
+      trigger_type: string
+      is_scheduled_run: boolean
+      status: string
+    inputs:
+      trigger: string
+  grn_agent:
+    name: grn_agent
+    agent_type: programmatic
+    communication_type: chain
+    can_call:
+    - agent: operations_manager
+      condition: calling_agent_response.requires_ops_review == true
+    description: Processes goods receipt against an open PO — updates on_hand inventory
+      and closes or partially receives the PO. Escalates to operations_manager on
+      quality incidents, short shipments, or inventory mismatches.
+    yields:
+      po_number: string
+      supplier: string
+      grn_status: string
+      received_at: string
+      receipt_lines: list
+      total_accepted: number
+      total_rejected: number
+      discrepancies: list
+      quality_incidents: list
+      requires_quality_review: boolean
+      requires_ops_review: boolean
+      status: string
+    inputs:
+      po_number: string
+      received_items: list
+  # ──────────────────────────────────────────────────────────────
+  # trade_compliance_agent — Lyzr-inspired (added in 2.3.x)
+  # Sanctions / denied-party / conflict-minerals / modern-slavery
+  # screening for new suppliers + high-value POs
+  # ──────────────────────────────────────────────────────────────
+  trade_compliance_agent:
+    name: trade_compliance_agent
+    agent_type: llm
+    description: OFAC/BIS/ITAR/EU/UK/UN sanctions screening + conflict-minerals + modern-slavery risk
+    model: gpt-4o-mini
+    temperature: 0.0
+    max_tokens: 1500
+    communication_type: chain
+    prompt: |
+      Screen the supplier against sanctions + risk lists. Return JSON
+      with these keys:
+        - legal_name: string
+        - country: 2-letter ISO
+        - sanctions_hits: list — any of OFAC_SDN, OFAC_CONS, BIS_DENIED,
+          BIS_ENTITY, ITAR_DEBARRED, EU_CONSOL, UK_HMT, UN_CONSOL
+        - modern_slavery_risk_score: 0..1 — based on country/industry
+        - materials_sourced: list — categories of materials supplied
+        - sourced_from_high_risk_region: bool — for 3TG/conflict minerals
+
+      Use only authoritative public sources. Empty `sanctions_hits` if
+      no match — do NOT guess.
+
+      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
+      {"screening_id": "", "supplier_id": "", "legal_name": "", "country": "", "sanctions_hits": [], "high_risk_country": false, "conflict_minerals_risk": false, "modern_slavery_risk_score": 0, "overall_status": "", "requires_compliance_review": false, "requires_hard_stop": false, "audit_hash": "", "screened_at_utc": ""}
+    enforce_yields: true
+    yields:
+      screening_id: string
+      supplier_id: string
+      legal_name: string
+      country: string
+      sanctions_hits: list
+      high_risk_country: boolean
+      conflict_minerals_risk: boolean
+      modern_slavery_risk_score: number
+      overall_status: string
+      requires_compliance_review: boolean
+      requires_hard_stop: boolean
+      audit_hash: string
+      screened_at_utc: string
+    inputs:
+      upstream_yields: object
+      supplier_id: string
+    can_call:
+      - agent: operations_manager
+        condition: "calling_agent_response.requires_hard_stop == true"
+      - agent: operations_manager
+        condition: "calling_agent_response.requires_compliance_review == true and calling_agent_response.requires_hard_stop == false"
+
+  # ──────────────────────────────────────────────────────────────
+  # tariff_classifier_agent — Lyzr-inspired (added in 2.3.x)
+  # HTS code lookup + duty / landed-cost estimation for inbound
+  # international goods
+  # ──────────────────────────────────────────────────────────────
+  tariff_classifier_agent:
+    name: tariff_classifier_agent
+    agent_type: llm
+    description: HTS classification + duty estimation + landed-cost computation for international PO line items
+    model: gpt-4o-mini
+    temperature: 0.0
+    max_tokens: 2000
+    communication_type: chain
+    prompt: |
+      Classify each line item with HTS code + country of origin.
+      Return JSON with key `line_items`: list of {line_item_id,
+      hts_code, country_of_origin, base_value_cents,
+      classification_confidence}.
+
+      HTS code = the 6-10 digit Harmonized Tariff Schedule code.
+      Confidence < 0.70 routes to customs broker review.
+
+      DO NOT guess HTS codes — leave low confidence rather than
+      inventing.
+
+      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
+      {"classifications": [], "classification_count": 0, "total_base_cents": 0, "total_duty_cents": 0, "total_landed_cost_cents": 0, "effective_duty_pct": 0, "has_low_confidence_items": false, "has_section_232_tariff": false, "requires_customs_broker_review": false, "classified_at_utc": ""}
+    enforce_yields: true
+    yields:
+      classifications: list
+      classification_count: number
+      total_base_cents: number
+      total_duty_cents: number
+      total_landed_cost_cents: number
+      effective_duty_pct: number
+      has_low_confidence_items: boolean
+      has_section_232_tariff: boolean
+      requires_customs_broker_review: boolean
+      classified_at_utc: string
+    inputs:
+      upstream_yields: object
+      line_items: list
+    can_call:
+      - agent: operations_manager
+        condition: "calling_agent_response.requires_customs_broker_review == true"
+
+  # ────────────────────────────────────────────────────────────
+  # procurement_audit_logger_agent — external WORM sink (CRITICAL)
+  # Hash-chained, append-only audit terminus. Records every issued PO
+  # (the human-approved path) AND every gate held on timeout
+  # ("held, awaiting approval") so a financial commitment — or the
+  # refusal to make one — is never silently dropped.
+  # Shaper: agency/_shared/audit_logger.py, registered in main.py via
+  # mesh.intelligence("procurement_audit_logger_agent").
+  # ────────────────────────────────────────────────────────────
+  procurement_audit_logger_agent:
+    name: procurement_audit_logger_agent
+    agent_type: external
+    description: "Writes immutable audit entry — terminus of every flow (issued PO or held gate)"
+    framework: custom
+    communication_type: execute
+
+    connector_config:
+      sink_type: local_file
+      local_file_path: ./logs/audit.jsonl
+      # Production: switch to S3 Object Lock / Datadog audit / Splunk HEC
+      # via agency/_shared/audit_logger.py.
+
+    yields:
+      audit_event_id: string
+      written_at_utc: string
+      hash_chain_prev: string
+      hash_chain_current: string
+
+    inputs:
+      session_id: string
+      payload: object
+
+    can_call: []                        # terminal
