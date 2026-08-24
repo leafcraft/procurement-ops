@@ -1,581 +1,491 @@
+# procurement-ops — Procurement-Ops Pod
+#
+# A pod of five digital employees + three human roles that runs a purchase
+# requisition end to end: requisition -> sourced (confidence-scored) -> new-supplier
+# compliance screen -> procurement plan built & cross-checked -> requester confirm ->
+# finance approval -> PO issued & registered -> live status.
+#
+# The pod is a TEAM, not a pipeline. Every wire is conditional; every hand-off is a
+# finished contract; every human gate default-denies on silence; the finisher
+# issues the real PO and fails closed; the WORM sink is the terminus. Systems
+# (ERP / SRM — SAP Ariba, Coupa, Oracle) are TOOLS inside agents, never members.
+#
+# Design doctrine: .claude/skills/leafmesh/building-agents-thoroughly.md
+# Field reference:  .claude/skills/leafmesh/agent-config-fields.md
+
 name: "procurement-ops"
 version: 1.0.0
 architecture: managed_mesh
 environment: development
 debug: true
 log_level: INFO
-redis:
-  session_ttl: 7200
-  host: "${REDIS_HOST:localhost}"
-  port: ${REDIS_PORT:6379}
-  password: "${REDIS_PASSWORD:}"
+
+persistence:
+  backend: redis
+  redis:
+    session_ttl: 7200
+    host: "${REDIS_HOST:localhost}"
+    port: ${REDIS_PORT:6379}
+    password: "${REDIS_PASSWORD:}"
+
 auto_discover:
   directory: ./agency
   pattern: '*_agent.py'
+
+# The Manager is the SUPERVISOR — it watches every hand-off and escalates stalls /
+# contract violations / repeated errors to the Procurement Lead. It is not a router
+# in the middle of the team.
 manager:
-  coordination_rules:
-    human_input_rules:
-      max_concurrent_requests: 3
-      max_agent_requests: 5
-      enable_request_queuing: true
-    timeout_rules:
-      max_timeouts_before_escalation: 2
-      timeout_escalation_enabled: true
-      escalation_notify_managers: true
-    workflow_pause_rules:
-      max_pause_duration_minutes: 30
-      max_concurrent_paused_workflows: 2
-      pause_monitoring_enabled: true
-    human_response_rules:
-      approval:
-        requires_manager_review: false
-        auto_escalate: false
-      escalation:
-        requires_manager_review: true
-        auto_escalate: true
-      timeout:
-        requires_manager_review: true
-        auto_escalate: false
+  model: gpt-4o-mini
+  domain: generic
+  prompt: |
+    This mesh runs purchase procurement. A successful requisition flows
+    Cora (coordinate) -> Sourcing (source, confidence-scored) -> Compliance
+    (screen new suppliers) -> Planner (build the plan, requester confirms) ->
+    approval (finance) -> PO Issuer (issue + register). Escalate to the
+    Procurement Lead when: a requisition loops on re-sourcing more than its bound,
+    a policy/budget flag or a sanctions hit is raised, an approval round times out,
+    or any agent hands off a malformed artifact. Silence never advances a
+    requisition.
+  routing:
+    mode: static
   escalation:
-    targets: []
+    targets:
+      - type: human_agent
+        agent: procurement_lead_human
     auto_escalate:
       max_retries: 3
       max_errors_per_session: 5
-      timeout_threshold: 120
-  routing:
-    mode: learning
-    memory_size: 100
-    confidence_threshold: 0.4
-    fallback: all
-    decay_days: 30
-  enabled: true
-  model: gpt-4o-mini
-  domain: generic
+      timeout_threshold: 2
+
 mesh:
   call_timeout: 150
+
+# 2.4.131 runtime block — the ONE non-default this pod genuinely needs: sourcing
+# across many SKUs (super_agent) can run long. Everything else stays default
+# (omission is meaningful; we do not pre-fill defaults).
+timeouts:
+  llm_hard_timeout_s: 300
+
+# ── Entry points — one per real-world trigger ────────────────────────────────
 entry_points:
-- name: process_order
-  target: order_intake_agent
-  description: Main entry — parses incoming orders and initiates supply chain workflow
-  condition: ''
-- name: manager_contact
-  target: operations_manager
-  description: Human-initiated — operations manager contacts the mesh via channel/webhook
-  condition: ''
-- name: check_inventory
-  target: inventory_agent
-  description: Direct inventory check — skips intake and compliance, goes straight
-    to forecast/supplier/logistics
-  condition: ''
-- name: find_suppliers
-  target: supplier_agent
-  description: Direct supplier research — ad-hoc supplier evaluation
-  condition: ''
-- name: plan_logistics
-  target: logistics_agent
-  description: Direct logistics planning — bypass upstream pipeline
-  condition: ''
-- name: supply_report
-  target: supply_report_agent
-  description: On-demand supply chain health report (also runs on daily cron)
-  condition: ''
-- name: receive_goods
-  target: grn_agent
-  description: Goods receipt — confirm delivery against a PO, update inventory on_hand
-  condition: ''
-# ── Lyzr-inspired entry points (added in 2.3.x) ──
-- name: trade_compliance_screen
-  target: trade_compliance_agent
-  description: Screen a supplier against OFAC/BIS/EU/UK/UN sanctions lists + conflict-minerals risk
-  condition: ''
-- name: tariff_classify
-  target: tariff_classifier_agent
-  description: HTS code lookup + duty / landed-cost estimation for international PO line items
-  condition: ''
+  - name: new_requisition
+    target: procurement_coordinator_agent
+    description: "A buyer files a requisition — Cora opens the case."
+    condition: always
+  - name: requisition_status
+    target: procurement_coordinator_agent
+    description: "Anyone asks 'where is my requisition?' — Cora answers from the case record."
+    condition: always
+  - name: daily_reorder_sweep
+    target: sourcing_agent
+    description: "Scheduled sweep for SKUs below reorder point (also fires on the wake_up cron)."
+    condition: always
+  - name: source_suppliers
+    target: sourcing_agent
+    description: "Direct supplier sourcing — ad-hoc evaluation for a set of SKUs."
+    condition: always
+  - name: requester_reply
+    target: requester_human
+    description: "HITL resume — the requester answers a question or confirms the plan."
+    condition: always
+
 agents:
-  operations_manager:
-    name: operations_manager
-    agent_type: human
-    communication_type: dual
-    can_call:
-    # APPROVED path — unchanged: a real human 'responded' (and did not reject)
-    # is the ONLY way the order proceeds to the supply-chain pipeline.
-    - agent: inventory_agent
-      condition: calling_agent_response.human_decision == 'responded' and calling_agent_response.human_message
-        != 'rejected'
-    # DEFAULT-DENY on timeout: an unanswered approval is HELD for the human —
-    # NOT auto-approved. The held order is recorded to the WORM audit sink as a
-    # "held, awaiting approval" terminus, never dropped, never auto-proceeded.
-    - agent: procurement_audit_logger_agent
-      condition: calling_agent_response.human_message == 'held_for_review' or calling_agent_response.human_message
-        == 'rejected'
-    is_human_powered: true
-    human_interface: default
-    human_timeout_seconds: 600
-    webhook_config:
-      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
-      outbound_headers:
-        Content-Type: application/json
-      outbound_timeout: 30
-      inbound_endpoint: /webhook/process_order
-      max_retries: 1
-      retry_delay: 2
-    fallback_on_timeout: true
-    fallback_response:
-      human_decision: held
-      message: held_for_review
-      human_message: held_for_review
-      note: Operations manager did not respond — order HELD for the human, NOT auto-approved (default-deny)
-    yields:
-      request_data: object
-      human_decision: string
-      human_message: string
-      items: list
-      urgency: string
-      order_summary: string
-      preferred_region: string
-    inputs:
-      order_message: string
-      order_type: string
-      items: list
-      urgency: string
-      preferred_region: string
-      po_number: string
-      discrepancies: list
-      quality_incidents: list
-  order_intake_agent:
-    name: order_intake_agent
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Cora — Procurement Coordinator (AI). Owns the requisition end to end: opens
+  # it, orchestrates the pod, keeps live status, is the requester's one contact.
+  # Pure orchestration — never sources, never approves. (Pure YAML.)
+  # ─────────────────────────────────────────────────────────────────────────
+  procurement_coordinator_agent:
+    name: procurement_coordinator_agent
+    communication_type: chain
     agent_type: llm
-    communication_type: dual
-    can_call:
-    - agent: operations_manager
-    description: Parses incoming orders, assesses urgency/risks, and runs rule-based
-      compliance screening — all orders go to operations_manager for approval
-    model: gpt-4o
-    prompt: |
-      You are a supply chain order intake specialist. Analyze the incoming message
-      and extract a structured order. Return ONLY a valid JSON object — no other text.
-
-      JSON schema:
-      {
-        "order_summary": "<one-line summary of the order>",
-        "items": [
-          {"sku": "<SKU-XXX>", "quantity": <integer>, "description": "<item name>"}
-        ],
-        "urgency": "<critical|high|normal>",
-        "order_type": "<purchase|restock|emergency>",
-        "risk_flags": ["<flag>"],
-        "detected_risk_level": "<normal|elevated|high>"
-      }
-
-      Urgency rules:
-        critical — delivery required within 24 hours
-        high     — delivery required within 72 hours
-        normal   — standard lead time acceptable
-
-      Valid risk flags:
-        single_supplier_dependency, high_quantity_order,
-        compliance_review_required, new_supplier_required,
-        budget_threshold_exceeded, unverified_destination,
-        unverified_sku
-
-      Tools available — use them before finalising the JSON:
-        1. validate_skus(items)      — confirm SKUs exist in inventory; add
-                                       'unverified_sku' flag for any unknown ones
-        2. estimate_order_value(items) — get estimated total cost; add
-                                         'budget_threshold_exceeded' flag if
-                                         result exceeds $50,000
-        3. get_sku_details(sku)      — look up stock status, category and ABC
-                                       class for a specific SKU when needed
-
-      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
-      {"order_summary": "", "items": [], "urgency": "", "order_type": "", "risk_flags": [], "detected_risk_level": "", "compliance_status": "", "compliance_issues": [], "requires_approval": false, "estimated_order_value": 0, "preferred_region": "", "order_message": "", "status": ""}
-    temperature: 0.3
-    enable_prompt_caching: true
-    tools:
-    - validate_skus
-    - estimate_order_value
-    - get_sku_details
-    tool_categories:
-    - "procurement-ops"
-    context_parts:
-      sentiment_analysis: this is for test context
-      guardrails: this is for test context
-    tool_choice: auto
-    max_tool_calls_per_message: 3
-    allow_parallel_tool_calls: true
-    tool_call_timeout: 3
-    parallel: true
-    yields:
-      order_summary: string
-      items: list
-      urgency: string
-      order_type: string
-      risk_flags: list
-      detected_risk_level: string
-      compliance_status: string
-      compliance_issues: list
-      requires_approval: boolean
-      estimated_order_value: number   # set by enforce_approval_floor @chain
-      preferred_region: string
-      order_message: string   # identity passthrough — operations_manager inputs
-      status: string
-    inputs:
-      message: string
-      preferred_region: string
-    memory:
-      strategy: relevance
-      limit: 10
-      cross_session: true
-  inventory_agent:
-    name: inventory_agent
-    agent_type: programmatic
-    communication_type: chain
-    can_call:
-    - agent: supplier_agent
-      condition: calling_agent_response.item_count > 0
-    description: Checks inventory levels, categorizes stock status, and computes
-      optimised order quantities (merged from demand_forecast_agent)
-    parallel: true
-    max_concurrent: 3
-    yields:
-      inventory_items: list
-      critical_items: list
-      item_count: number
-      critical_count: number
-      low_count: number
-      reorder_needed: boolean
-      urgency: string
-      alert: string
-      total_forecasted_units: number
-      adjusted_count: number
-      quarter_end_uplift_applied: boolean
-      is_scheduled_run: boolean
-      preferred_region: string
-      status: string
-    inputs:
-      items: list
-      preferred_region: string
-  supplier_agent:
-    name: supplier_agent
-    agent_type: programmatic
-    communication_type: chain
-    can_call:
-    - agent: logistics_agent
-    description: Scores and ranks suppliers per SKU using composite scoring
-      (reliability 40%, lead time 35%, price 25%) — converted from LLM to programmatic
-    yields:
-      suppliers: list
-      best_by_sku: object
-      recommended_supplier: string
-      estimated_lead_time_days: number
-      estimated_cost: number
-      analysis: object
-      report: object
-      inventory_items: list
-      critical_items: list
-      is_scheduled_run: boolean
-      preferred_region: string
-      status: string
-    inputs:
-      inventory_data: object
-      items: list
-      preferred_region: string
-  logistics_agent:
-    name: logistics_agent
-    agent_type: llm
-    communication_type: chain
-    can_call:
-    - agent: po_approval_agent
-    description: Plans procurement and fulfillment strategy from inventory + supplier
-      data
     model: gpt-4o-mini
+    temperature: 0.1
+    description: "Procurement Coordinator — opens the case, orchestrates, keeps status, single point of contact."
     prompt: |
-      You are a logistics and procurement strategist. Using the inventory status and
-      supplier analysis provided, create an optimal fulfillment plan. Balance: total
-      cost minimization, lead time reduction, supply continuity risk, and budget
-      compliance. Produce a concrete, priority-ordered procurement plan with clear
-      rationale for each decision. Flag any items requiring immediate action.
+      You are Cora, the Procurement Coordinator. You OWN each purchase requisition
+      from the moment it is filed to the moment a PO is issued. You orchestrate the
+      pod and keep the requester informed — you never source a supplier, build a
+      plan, or approve anything yourself.
+
+      On a new requisition: open a case, record the filing time, hand it to the
+      Sourcing Analyst. On a status ask: answer current stage / waiting-on / next
+      gate from the case record — nothing invented. Route any specialist's
+      exception to the Procurement Lead; never make the policy call yourself.
 
       OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
-      {"procurement_plan": [], "total_estimated_cost": 0, "fulfillment_timeline_days": 0, "risk_assessment": "", "priority_score": 0, "next_steps": [], "recommended_supplier": "", "supplier_source": "", "supplier_confidence": 0, "critical_items_count": 0, "skipped_agents": [], "is_scheduled_run": false, "source_data": {}, "procurement_report": {}, "alerts": {}, "status": ""}
-    temperature: 0.3
-    max_tokens: 1200
-    optimization_strategy: performance
-    wait_for: supplier_agent
-    wait_for_timeout: 120
+      {"action": ..., "requisition_id": ..., "stage": ..., "waiting_on": ..., "summary": ...}
     yields:
-      procurement_plan: list
-      total_estimated_cost: number
-      fulfillment_timeline_days: number
-      risk_assessment: string
-      priority_score: number
-      next_steps: list
-      recommended_supplier: string
-      supplier_source: string
-      supplier_confidence: number
-      critical_items_count: number
-      skipped_agents: list
-      is_scheduled_run: boolean
-      source_data: object
-      procurement_report: object
-      alerts: object
-      status: string
-    inputs:
-      inventory_data: object
-      supplier_data: object
-  po_approval_agent:
-    name: po_approval_agent
-    agent_type: human
-    communication_type: dual
+      action: "string"        # open_requisition | status | escalate
+      requisition_id: "string"
+      stage: "string"
+      waiting_on: "string"
+      summary: "string"
     can_call:
-    # APPROVED path — unchanged: a real human 'responded' (and did not reject)
-    # is the ONLY way a purchase order is issued (a financial commitment).
-    - agent: purchase_order_agent
-      condition: calling_agent_response.human_decision == 'responded' and calling_agent_response.human_message
-        != 'rejected'
-    # DEFAULT-DENY on timeout: an unanswered approval is HELD for the human —
-    # NOT auto-approved, so NO purchase order is auto-issued. The held PO is
-    # recorded to the WORM audit sink as a "held, awaiting approval" terminus.
-    - agent: procurement_audit_logger_agent
-      condition: calling_agent_response.human_message == 'held_for_review' or calling_agent_response.human_message
-        == 'rejected'
-    description: |
-      Procurement plan ready for approval. Orders over $5,000 require finance sign-off.
-      Reply *approved* to issue purchase orders or *rejected* to cancel.
-    is_human_powered: true
-    human_interface: default
-    human_timeout_seconds: 600
-    webhook_config:
-      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
-      outbound_headers:
-        Content-Type: application/json
-      outbound_timeout: 30
-      inbound_endpoint: /webhook/process_order
-      max_retries: 1
-      retry_delay: 2
-    fallback_on_timeout: true
-    fallback_response:
-      human_decision: held
-      message: held_for_review
-      human_message: held_for_review
-      note: No approver responded — purchase order HELD for the human, NOT auto-approved (default-deny). No PO is auto-issued.
-    yields:
-      human_decision: string
-      human_message: string
-      human_data: object
-      original_webhook_data: object
-    inputs:
-      procurement_plan: list
-      total_estimated_cost: number
-      risk_assessment: string
-      recommended_supplier: string
-      is_scheduled_run: boolean
-  purchase_order_agent:
-    name: purchase_order_agent
-    agent_type: programmatic
+      - agent: sourcing_agent
+        condition: "calling_agent_response.action == 'open_requisition'"
+      - agent: procurement_lead_human
+        condition: "calling_agent_response.action == 'escalate'"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Sourcing Analyst (AI, Super-Agent). Reads the requisition, stock and supplier
+  # catalog and produces confidence-scored recommended lines. This is where
+  # "no guessed vendor" is won: a SKU with no supplier on file becomes a QUESTION
+  # to the requester, never a made-up vendor in a PO. Loops its tools until the
+  # recommendation is CLEAN, then hands it to the Planner (or to Compliance when a
+  # NEW supplier is chosen). super_agent = autonomous plan/execute/verify across
+  # many SKUs. instances = fan out the reorder backlog. @chain = the coverage floor.
+  # ─────────────────────────────────────────────────────────────────────────
+  sourcing_agent:
+    name: sourcing_agent
     communication_type: chain
-    description: Generates formal purchase orders from the approved procurement plan
-    can_call:
-    # Terminal: every issued PO is recorded to the WORM audit sink — the
-    # outcome of the human-approved path is the audited terminus.
-    - agent: procurement_audit_logger_agent
+    agent_type: llm
+    model: claude-sonnet-4-6
+    temperature: 0.1
+    max_tool_calls_per_message: 15   # many SKUs × (check stock + find suppliers); default 5 truncates silently
+    description: "Sourcing Analyst — reads the requisition, sources suppliers per SKU with confidence, flags budget/policy."
+    # Scheduled reorder sweep — daily, in the company's timezone (NOT UTC). Also
+    # reachable via the daily_reorder_sweep entry point. ONE cron line; the fan-out
+    # comes from `instances`, not extra crons. Set `timezone` to your business zone.
+    wake_up: "0 8 * * *"
+    timezone: "Asia/Kolkata"
+    wake_up_input:
+      trigger: daily_reorder_sweep
+    # Parallel copies per activation — on the daily sweep each copy claims a
+    # DISJOINT batch of the reorder backlog via the atomic claim_reorder_batch tool
+    # (agency/tools.py), so N copies split the work instead of duplicating it.
+    instances: 3
+    instances_handoff: last
+    super_agent:                     # DICT form = the tuning path (2.4.123+); the ONLY way to tune it
+      cost_ceiling: 120000
+      wall_clock: 900
+    prompt: |
+      You are the Sourcing Analyst. Your job is to turn a requisition into
+      confidence-scored, quote-traced recommended lines — and to REFUSE to guess.
+      Read the requisition, read current stock for each SKU, and find qualified
+      suppliers for each line. Score every line (supplier fit, price, lead time)
+      with a confidence 0-1. Classify the requisition (domestic / international) and
+      raise budget/policy flags.
+
+      NEVER invent a supplier, price, or quantity no quote shows. A SKU with no
+      supplier on file, or any line you cannot fill with confidence, is ONE targeted
+      QUESTION to the requester, not a made-up line. Set `new_supplier` true when a
+      chosen supplier is not already on file (it must be screened before it is used).
+      Route budget/policy flags to the Procurement Lead. Hand clean recommended
+      lines onward ONLY when the sourcing is clean. On the daily sweep, call
+      claim_reorder_batch to claim your disjoint batch first. Load the `rfq`,
+      `compare`, and `po_prep` playbooks for the exact craft.
+
+      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
+      {"sourcing_clean": ..., "requisition_class": ..., "low_confidence_skus": ...,
+       "sourcing_flags": ..., "recommended_lines": ..., "new_supplier": ...,
+       "question_for_requester": ...}
     yields:
-      purchase_orders: list
-      po_numbers: list
-      pdf_paths: list
-      total_po_value: number
-      total_po_value_formatted: string
-      supplier_count: number
-      line_count: number
-      issued_at: string
-      approval_reference: string
-      validation_errors: list   # set by register_valid_pos @chain floor
-      status: string
-    inputs:
-      procurement_plan: list
-      recommended_supplier: string
-      is_scheduled_run: boolean
-      human_message: string
-      session_id: string
-  supply_report_agent:
-    name: supply_report_agent
-    agent_type: programmatic
-    communication_type: chain
+      sourcing_clean: "boolean"
+      requisition_class: "string"
+      low_confidence_skus: "array"
+      sourcing_flags: "array"
+      recommended_lines: "array"
+      new_supplier: "boolean"
+      question_for_requester: "string"
+    # Playbook — the CRAFT, fetched on demand. Only `description` rides in the
+    # prompt; `responsibility` is loaded when the model recognises the intent.
+    playbook:
+      - intent: rfq
+        description: "How to run a request-for-quote across a SKU's suppliers."
+        responsibility: |
+          1. Pull the requisition FIRST (read_requisition), then read stock for
+             each SKU (check_inventory) — you cannot size an order you have not
+             measured against on-hand + reorder point.
+          2. For each line, find_suppliers and collect price, lead time,
+             reliability, MOQ, currency and region for every option.
+          3. A SKU with NO supplier on file is a question to the requester —
+             never a guessed vendor.
+        variables: [requisition_id]
+      - intent: compare
+        description: "How to compare supplier options and pick the best line."
+        responsibility: |
+          1. Score each option: reliability (40%), lead time vs need-by (35%),
+             landed price (25%). Respect MOQ — round the quantity up to MOQ and
+             note it, never silently under-order.
+          2. Convert foreign-currency quotes at the transaction-date rate and keep
+             the original on record.
+          3. Any option scoring below 0.85 confidence is a low-confidence line —
+             ask, do not guess.
+        variables: [requisition_id]
+      - intent: po_prep
+        description: "How to prepare clean lines for the planner and flag risk."
+        responsibility: |
+          1. estimate_landed_cost across the chosen lines; if it crosses the
+             budget threshold, raise a `budget_threshold_exceeded` flag — do NOT
+             waive it.
+          2. Set `new_supplier` true if any chosen supplier is not on file, so the
+             pod screens it before use.
+          3. Emit recommended_lines with sku, supplier, unit_price, quantity,
+             currency, lead_time_days, moq, confidence.
+        variables: [requisition_id, requisition_class]
+    # Day-0 tool surface — reads the seed store so the pod runs with NO connector
+    # wired. Each tool has a dev-store fallback and announces itself
+    # (available:false) when it has no real source. See agency/tools.py.
+    tools: [read_requisition, check_inventory, find_suppliers, estimate_landed_cost, claim_reorder_batch]
+    tool_categories: [sourcing]
+    # ── To wire a real ERP/SRM, uncomment and set the URLs (each named action
+    #    under `use:` becomes its own tool, e.g. erp_read_requisition). NOTE: the
+    #    SDK rejects an http mcp block with an EMPTY url at load, so this ships
+    #    commented — fill the URL, then uncomment. ──
+    # mcp:
+    #   - transport: http
+    #     url: "${ERP_MCP_URL}"
+    #     token: "${ERP_MCP_TOKEN:}"
+    #     use: [read_requisition, read_inventory, register_po]
+    #     name: erp
+    #     timeout: 30
+    #   - transport: http
+    #     url: "${SRM_MCP_URL}"
+    #     token: "${SRM_MCP_TOKEN:}"
+    #     use: [find_suppliers, request_quote]
+    #     name: srm
+    #     timeout: 30
     can_call:
-    - agent: supplier_agent
-      condition: calling_agent_response.status == 'report_generated'
-    description: Generates daily supply chain KPI reports and chains through forecast
-      → supplier → logistics → PO for a fully automated daily procurement run
-    wake_up: 0 8 * * *
-    yields:
-      report: string
-      generated_at: string
-      checks: object
-      metrics: object
-      inventory_items: list
-      item_count: number
-      critical_items: list
-      trigger_type: string
-      is_scheduled_run: boolean
-      status: string
-    inputs:
-      trigger: string
-  grn_agent:
-    name: grn_agent
-    agent_type: programmatic
-    communication_type: chain
-    can_call:
-    - agent: operations_manager
-      condition: calling_agent_response.requires_ops_review == true
-    description: Processes goods receipt against an open PO — updates on_hand inventory
-      and closes or partially receives the PO. Escalates to operations_manager on
-      quality incidents, short shipments, or inventory mismatches.
-    yields:
-      po_number: string
-      supplier: string
-      grn_status: string
-      received_at: string
-      receipt_lines: list
-      total_accepted: number
-      total_rejected: number
-      discrepancies: list
-      quality_incidents: list
-      requires_quality_review: boolean
-      requires_ops_review: boolean
-      status: string
-    inputs:
-      po_number: string
-      received_items: list
-  # ──────────────────────────────────────────────────────────────
-  # trade_compliance_agent — Lyzr-inspired (added in 2.3.x)
-  # Sanctions / denied-party / conflict-minerals / modern-slavery
-  # screening for new suppliers + high-value POs
-  # ──────────────────────────────────────────────────────────────
+      - agent: requester_human
+        condition: "calling_agent_response.sourcing_clean == false and calling_agent_response.question_for_requester != ''"
+      - agent: procurement_lead_human
+        condition: "calling_agent_response.sourcing_flags != []"
+      - agent: trade_compliance_agent
+        condition: "calling_agent_response.sourcing_clean == true and calling_agent_response.new_supplier == true"
+      - agent: procurement_planner_agent
+        condition: "calling_agent_response.sourcing_clean == true and calling_agent_response.new_supplier == false"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Compliance Screener (AI). Screens a NEW supplier against sanctions / denied-
+  # party / conflict-minerals / modern-slavery risk before it is ever used. A hard
+  # stop or a review need goes to the Procurement Lead; a clear screen hands the
+  # requisition to the Planner. Pure YAML (a screen with routing, no side effects).
+  # ─────────────────────────────────────────────────────────────────────────
   trade_compliance_agent:
     name: trade_compliance_agent
+    communication_type: chain
     agent_type: llm
-    description: OFAC/BIS/ITAR/EU/UK/UN sanctions screening + conflict-minerals + modern-slavery risk
     model: gpt-4o-mini
     temperature: 0.0
     max_tokens: 1500
-    communication_type: chain
+    description: "Compliance Screener — sanctions / denied-party / conflict-minerals / modern-slavery screen for new suppliers."
     prompt: |
-      Screen the supplier against sanctions + risk lists. Return JSON
-      with these keys:
-        - legal_name: string
-        - country: 2-letter ISO
-        - sanctions_hits: list — any of OFAC_SDN, OFAC_CONS, BIS_DENIED,
-          BIS_ENTITY, ITAR_DEBARRED, EU_CONSOL, UK_HMT, UN_CONSOL
-        - modern_slavery_risk_score: 0..1 — based on country/industry
-        - materials_sourced: list — categories of materials supplied
-        - sourced_from_high_risk_region: bool — for 3TG/conflict minerals
+      You screen a NEW supplier before it is used on any PO. Check the supplier
+      against sanctions and risk lists (OFAC SDN/CONS, BIS Denied/Entity, ITAR,
+      EU/UK/UN consolidated), conflict-minerals (3TG) exposure by region, and
+      modern-slavery risk by country/industry. Use only authoritative public
+      sources. Empty `sanctions_hits` if there is no match — do NOT guess.
 
-      Use only authoritative public sources. Empty `sanctions_hits` if
-      no match — do NOT guess.
+      A confirmed sanctions match is a HARD STOP (requires_hard_stop true). A
+      material but non-blocking risk needs review (requires_review true). A clean
+      screen sets screening_status 'clear'.
 
       OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
-      {"screening_id": "", "supplier_id": "", "legal_name": "", "country": "", "sanctions_hits": [], "high_risk_country": false, "conflict_minerals_risk": false, "modern_slavery_risk_score": 0, "overall_status": "", "requires_compliance_review": false, "requires_hard_stop": false, "audit_hash": "", "screened_at_utc": ""}
-    enforce_yields: true
+      {"screening_status": ..., "sanctions_hits": ..., "requires_hard_stop": ...,
+       "requires_review": ..., "screened_supplier": ...}
     yields:
-      screening_id: string
-      supplier_id: string
-      legal_name: string
-      country: string
-      sanctions_hits: list
-      high_risk_country: boolean
-      conflict_minerals_risk: boolean
-      modern_slavery_risk_score: number
-      overall_status: string
-      requires_compliance_review: boolean
-      requires_hard_stop: boolean
-      audit_hash: string
-      screened_at_utc: string
-    inputs:
-      upstream_yields: object
-      supplier_id: string
+      screening_status: "string"      # clear | review | hard_stop
+      sanctions_hits: "array"
+      requires_hard_stop: "boolean"
+      requires_review: "boolean"
+      screened_supplier: "string"
     can_call:
-      - agent: operations_manager
+      - agent: procurement_lead_human
         condition: "calling_agent_response.requires_hard_stop == true"
-      - agent: operations_manager
-        condition: "calling_agent_response.requires_compliance_review == true and calling_agent_response.requires_hard_stop == false"
+      - agent: procurement_lead_human
+        condition: "calling_agent_response.requires_review == true and calling_agent_response.requires_hard_stop == false"
+      - agent: procurement_planner_agent
+        condition: "calling_agent_response.screening_status == 'clear'"
 
-  # ──────────────────────────────────────────────────────────────
-  # tariff_classifier_agent — Lyzr-inspired (added in 2.3.x)
-  # HTS code lookup + duty / landed-cost estimation for inbound
-  # international goods
-  # ──────────────────────────────────────────────────────────────
-  tariff_classifier_agent:
-    name: tariff_classifier_agent
-    agent_type: llm
-    description: HTS classification + duty estimation + landed-cost computation for international PO line items
-    model: gpt-4o-mini
-    temperature: 0.0
-    max_tokens: 2000
+  # ─────────────────────────────────────────────────────────────────────────
+  # Procurement Planner / Builder (AI + finisher-lite). Turns the sourcing
+  # recommendation into a procurement plan, cross-checks totals / MOQs against the
+  # source, and gets the requester's one-look confirmation. Deliberately SEPARATE
+  # from Sourcing (the reader is not the assembler). Renders the draft to ./out
+  # (@chain cross-check floor, fail closed). The back-edge to Sourcing is BOUNDED
+  # (a per-session rework counter → terminal route to the Procurement Lead).
+  # See agency/procurement_planner_agent.py.
+  # ─────────────────────────────────────────────────────────────────────────
+  procurement_planner_agent:
+    name: procurement_planner_agent
     communication_type: chain
+    agent_type: llm
+    model: claude-sonnet-4-6
+    temperature: 0.1
+    description: "Procurement Planner — builds the plan from sourced lines, cross-checks, gets requester confirmation."
     prompt: |
-      Classify each line item with HTS code + country of origin.
-      Return JSON with key `line_items`: list of {line_item_id,
-      hts_code, country_of_origin, base_value_cents,
-      classification_confidence}.
-
-      HTS code = the 6-10 digit Harmonized Tariff Schedule code.
-      Confidence < 0.70 routes to customs broker review.
-
-      DO NOT guess HTS codes — leave low confidence rather than
-      inventing.
+      You are the Procurement Planner. Turn the Sourcing Analyst's recommended
+      lines into a procurement plan — one draft PO pack. Cross-check line totals,
+      the plan total, currency and supplier MOQs against the source data BEFORE
+      anyone sees the plan. Surface anything below full confidence to the requester
+      rather than filling it silently. Send the requester a single confirm-or-correct
+      draft; on confirmation, hand the plan to the PO Issuer for approval routing.
+      If a cross-check fails to tie out, return it to Sourcing with the specific
+      discrepancy — never force the numbers to balance. Load the `build_plan`
+      playbook for the assembly + cross-check order.
 
       OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
-      {"classifications": [], "classification_count": 0, "total_base_cents": 0, "total_duty_cents": 0, "total_landed_cost_cents": 0, "effective_duty_pct": 0, "has_low_confidence_items": false, "has_section_232_tariff": false, "requires_customs_broker_review": false, "classified_at_utc": ""}
-    enforce_yields: true
+      {"plan_built": ..., "cross_check_ok": ..., "discrepancy": ...,
+       "awaiting_confirmation": ..., "confirmed": ..., "rework_exhausted": ...,
+       "artifact_path": ..., "recommended_lines": ..., "requisition_id": ...}
     yields:
-      classifications: list
-      classification_count: number
-      total_base_cents: number
-      total_duty_cents: number
-      total_landed_cost_cents: number
-      effective_duty_pct: number
-      has_low_confidence_items: boolean
-      has_section_232_tariff: boolean
-      requires_customs_broker_review: boolean
-      classified_at_utc: string
-    inputs:
-      upstream_yields: object
-      line_items: list
+      plan_built: "boolean"
+      cross_check_ok: "boolean"
+      discrepancy: "string"
+      awaiting_confirmation: "boolean"
+      confirmed: "boolean"
+      rework_exhausted: "boolean"     # set by enforce_cross_check_floor when the back-edge is exhausted
+      artifact_path: "string"
+      recommended_lines: "array"
+      requisition_id: "string"
+    playbook:
+      - intent: build_plan
+        description: "How to assemble the procurement plan and cross-check it."
+        responsibility: |
+          1. Build one line per recommended line — keep each traceable to the
+             supplier quote it came from. No manual entry.
+          2. Re-check line totals, the plan total, currency and supplier MOQs
+             against the source. If it does not tie out, return to Sourcing with
+             the discrepancy — do not adjust a number to make it balance.
+          3. Produce the plan (a draft PO pack) to ./out.
+          4. Send the requester ONE confirm-or-correct draft. Fold corrections in,
+             re-version, re-check. On confirmation, hand to the PO Issuer.
+        variables: [requisition_id]
     can_call:
-      - agent: operations_manager
-        condition: "calling_agent_response.requires_customs_broker_review == true"
+      - agent: requester_human
+        condition: "calling_agent_response.awaiting_confirmation == true"
+      - agent: sourcing_agent
+        condition: "calling_agent_response.cross_check_ok == false and calling_agent_response.rework_exhausted == false and calling_agent_response.discrepancy != ''"
+      - agent: procurement_lead_human
+        condition: "calling_agent_response.rework_exhausted == true"
+      - agent: po_issuer_agent
+        condition: "calling_agent_response.confirmed == true"
 
-  # ────────────────────────────────────────────────────────────
-  # procurement_audit_logger_agent — external WORM sink (CRITICAL)
-  # Hash-chained, append-only audit terminus. Records every issued PO
-  # (the human-approved path) AND every gate held on timeout
-  # ("held, awaiting approval") so a financial commitment — or the
-  # refusal to make one — is never silently dropped.
-  # Shaper: agency/_shared/audit_logger.py, registered in main.py via
-  # mesh.intelligence("procurement_audit_logger_agent").
-  # ────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # PO Issuer (programmatic FINISHER). Routes the confirmed plan through finance
+  # approval, issues the formal PO, registers it as an open PO, records the
+  # supplier-facing send, and appends an append-only ledger entry. This is the
+  # actuator BEHIND the human approval gate: it re-checks approval (fail closed on
+  # an unknown verdict), renders the PO pack to ./out, deletes it on a blocked
+  # floor, and never approves or issues itself. See agency/po_issuer_agent.py.
+  # ─────────────────────────────────────────────────────────────────────────
+  po_issuer_agent:
+    name: po_issuer_agent
+    communication_type: chain
+    agent_type: programmatic
+    description: "PO Issuer — routes finance approval, issues + registers the PO, WORM ledger. Fails closed."
+    yields:
+      routed_for_approval: "boolean"
+      approved: "boolean"
+      po_issued: "boolean"
+      po_numbers: "array"
+      artifact_paths: "array"
+      status: "string"          # routed | issued | blocked
+      block_reasons: "array"
+    can_call:
+      - agent: approver_human
+        condition: "calling_agent_response.status == 'routed'"
+      - agent: procurement_audit_logger_agent
+        condition: always
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Human members — first-class, reached in the channel they already live in.
+  # Every gate DEFAULT-DENIES on timeout (fallback -> held_for_review -> audit).
+  # `dual` belongs on the human/webhook boundary agent ONLY (nuances #17); every
+  # downstream peer these humans call is `chain`, so there is no dual->dual.
+  # ─────────────────────────────────────────────────────────────────────────
+
+  requester_human:
+    name: requester_human
+    agent_type: human
+    human_interface: webhook
+    communication_type: dual
+    human_timeout_seconds: 172800   # 2 days to answer a question / confirm
+    description: "Requester / buyer — answers sourcing questions, confirms the plan."
+    fallback_on_timeout: true
+    fallback_response:
+      human_decision: held
+      human_message: held_for_review
+    webhook_config:
+      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
+      outbound_headers: {Content-Type: "application/json"}
+      outbound_timeout: 30
+      max_retries: 1
+      retry_delay: 2
+    can_call:
+      - agent: sourcing_agent
+        condition: "calling_agent_response.from_agent == 'sourcing_agent'"
+      - agent: procurement_planner_agent
+        condition: "calling_agent_response.from_agent == 'procurement_planner_agent'"
+    yields:
+      human_message: "string"
+    inputs:
+      question: "string"
+
+  approver_human:
+    name: approver_human
+    agent_type: human
+    human_interface: webhook
+    communication_type: dual
+    human_timeout_seconds: 259200   # 3 days; the PO Issuer chases reminders
+    description: "Finance approver — approves or rejects the purchase order (a financial commitment)."
+    fallback_on_timeout: true
+    fallback_response:
+      human_decision: held
+      human_message: held_for_review
+    webhook_config:
+      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
+      outbound_headers: {Content-Type: "application/json"}
+      outbound_timeout: 30
+    can_call:
+      - agent: po_issuer_agent
+        condition: "calling_agent_response.human_message == 'approved'"
+      # On silence/hold, record it and let the Manager SUPERVISOR escalate to the
+      # Procurement Lead (manager.escalation.targets) — no hardcoded human→human wire.
+      - agent: procurement_audit_logger_agent
+        condition: "calling_agent_response.human_message == 'held_for_review'"
+    yields:
+      human_message: "string"       # approved | rejected | held_for_review
+    inputs:
+      po_pack: "object"
+
+  procurement_lead_human:
+    name: procurement_lead_human
+    agent_type: human
+    human_interface: webhook
+    communication_type: dual
+    human_timeout_seconds: 259200
+    description: "Accountable owner — reviews exceptions, owns policy/budget calls, decides every gate. Everything that leaves the pod."
+    fallback_on_timeout: true
+    fallback_response:
+      human_decision: held
+      human_message: held_for_review
+    webhook_config:
+      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
+      outbound_headers: {Content-Type: "application/json"}
+      outbound_timeout: 30
+    can_call:
+      - agent: procurement_audit_logger_agent
+        condition: always
+    yields:
+      human_message: "string"
+    inputs:
+      exception: "object"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # WORM audit sink — hash-chained, append-only, the terminus of every path.
+  # Registered in main.py via sdk.intelligence("procurement_audit_logger_agent").
+  # ─────────────────────────────────────────────────────────────────────────
   procurement_audit_logger_agent:
     name: procurement_audit_logger_agent
     agent_type: external
-    description: "Writes immutable audit entry — terminus of every flow (issued PO or held gate)"
     framework: custom
     communication_type: execute
-
+    description: "WORM audit — hash-chains every decision, issued PO, approval, and held gate. Terminus."
     connector_config:
       sink_type: local_file
-      local_file_path: ./logs/audit.jsonl
-      # Production: switch to S3 Object Lock / Datadog audit / Splunk HEC
-      # via agency/_shared/audit_logger.py.
-
-    yields:
-      audit_event_id: string
-      written_at_utc: string
-      hash_chain_prev: string
-      hash_chain_current: string
-
-    inputs:
-      session_id: string
-      payload: object
-
-    can_call: []                        # terminal
+      local_file_path: "./logs/procurement_audit.jsonl"
+    can_call: []

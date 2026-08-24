@@ -1,232 +1,157 @@
-# Procurement Ops — Product Requirements / Build Doc
+# procurement-ops — Procurement-Ops Pod · PRD
 
-> An end-to-end procure-to-pay department built as a LeafMesh agency. A raw
-> order message is groomed into a structured, compliance-screened order by an
-> **order intake specialist**, signed off by an **operations manager** (human),
-> then flowed through **inventory + demand planning**, **supplier sourcing**,
-> and **logistics planning** before a **finance approver** (human) authorises
-> spend and a **purchase order clerk** issues real PDF POs. A **goods-receipt
-> clerk** closes the loop when stock arrives, and a **supply chain analyst**
-> runs the same chain unattended every morning on a cron. Optional
-> **trade-compliance** and **customs-classification** roles screen
-> cross-border buys. State lives in the customer's systems (ERP/WMS/SRM in
-> production; seed YAML for the demo); the two human gates are the only points
-> where work pauses for a person.
+The brief behind `configs/config.yaml`. This pod runs a purchase requisition from
+filing all the way to an **issued, registered PO**, as a **team** of self-reliant
+agents — a coordinator, specialists, a finisher, first-class human gates, and a
+WORM sink — supervised by the LeafMesh Manager. Not a pipeline.
+
+Design doctrine: `.claude/skills/leafmesh/building-agents-thoroughly.md`.
+SDK baseline: **2.4.131**.
 
 ---
 
-## 1. The operation at a glance
+## 1. The pod shape
 
 ```
- process_order  (raw order message)                 supply_report  cron 0 8 * * *
-        │                                                   │
-   ┌────▼───────────────────────────────────┐         ┌─────▼─────────────────────┐
-   │ order_intake_agent  (LLM)               │         │ supply_report_agent       │
-   │  • @pre_compose: context/clean/extras   │         │  • live inventory+supplier│
-   │  • @chain: enforce_approval_floor       │         │    KPIs                    │
-   │  • tools: validate_skus,                │         │  • is_scheduled_run = true │
-   │    estimate_order_value, get_sku_details│         └─────┬─────────────────────┘
-   │  • rule-based compliance screen         │               │ status==report_generated
-   │  • stash yields → Redis + session       │               │
-   └────┬────────────────────────────────────┘              │
-        │ (all orders)                                       │
-   ┌────▼────────────────────────────┐                       │
-   │ operations_manager  (HUMAN gate) │                       │
-   │  approved/timeout → inventory    │                       │
-   │  rejected → halt                 │                       │
-   └────┬─────────────────────────────┘                      │
-        │ approved / timeout_default                          │
-   ┌────▼─────────────────────────────┐                       │
-   │ inventory_agent  (programmatic)  │                       │
-   │  • recover items from stash/Redis│                       │
-   │  • stock status + demand forecast│                       │
-   └────┬─────────────────────────────┘                      │
-        │ item_count > 0                                      │
-   ┌────▼─────────────────────────────┐  ◄────────────────────┘
-   │ supplier_agent  (programmatic)   │   (cron path enters here)
-   │  • score/rank suppliers per SKU  │
-   └────┬─────────────────────────────┘
-        │
-   ┌────▼─────────────────────────────┐
-   │ logistics_agent  (LLM)           │
-   │  • @chain: validate, score        │
-   │  • @compose: report, alerts       │
-   │  • wait_for: supplier_agent       │
-   └────┬─────────────────────────────┘
-        │
-   ┌────▼─────────────────────────────┐
-   │ po_approval_agent  (HUMAN gate)  │
-   │  approved/timeout → PO clerk     │
-   │  rejected → halt · scheduled →   │
-   │  auto-approve                    │
-   └────┬─────────────────────────────┘
-        │ approved / timeout_default
-   ┌────▼─────────────────────────────┐
-   │ purchase_order_agent (programmatic)│
-   │  • group by supplier, issue PO #  │
-   │  • render PDF                      │
-   │  • @chain: register_valid_pos     │
-   │    (PO-validity floor, fail-closed)│
-   └───────────────────────────────────┘
+              ┌───────────────────────── Manager (supervisor) ──────────────────────────┐
+              │   reads every hand-off; escalates stalls/timeouts to the Procurement Lead │
+              └──────────────────────────────────────────────────────────────────────────┘
 
- receive_goods ─► grn_agent (programmatic) ──requires_ops_review──► operations_manager
- trade_compliance_screen ─► trade_compliance_agent (LLM, @chain enforce_compliance_floor) ──hard_stop/review──► operations_manager
- tariff_classify ─► tariff_classifier_agent (LLM, @chain enforce_customs_floor) ──broker_review──► operations_manager
+  new_requisition ─┐
+  requisition_status ─┼─▶ Cora ──(open_requisition)──▶ Sourcing ──┬── clean + known supplier ──▶ Planner
+  (status ask) ────┘   (coordinator)   (super_agent,   │           ├── clean + NEW supplier ──▶ Compliance ──(clear)──▶ Planner
+                                        playbook,        │           ├── low-confidence ──▶ requester (ask, not guess)
+  daily_reorder_sweep ─▶ Sourcing       instances)       │           └── budget/policy flag ──▶ Procurement Lead
+  source_suppliers ───▶ Sourcing                         │
+                                                         ▼
+                          Planner ──┬── ties out ──▶ requester (confirm) ──▶ PO Issuer
+                          (cross-    ├── mismatch ──▶ Sourcing (rework, BOUNDED)
+                           check     └── rework exhausted ──▶ Procurement Lead (terminal)
+                           floor)                                   │
+                                                                    ▼
+             audit ◀── PO Issuer ◀──(approved)── approver ◀──(routed)── PO Issuer
+           (WORM)   (FINISHER: re-check approval, re-check invariants,
+                     render ./out/<PO>.md, DELETE-ON-BLOCK, register open PO)
 ```
 
-## 2. Actor inventory (job titles)
+**One human, one agent, one system per stage.** The agent produces, the human
+decides, the system records — no stage advances on an agent's own authority.
 
-| Actor | Type | Job title | Mesh role |
-|---|---|---|---|
-| `operations_manager` | human | Operations Manager | Order-approval gate; receives goods-receipt & trade escalations |
-| `order_intake_agent` | llm | Order Intake Specialist | Structures + compliance-screens the order |
-| `inventory_agent` | programmatic | Inventory & Demand Planner | Stock status + reorder forecasting |
-| `supplier_agent` | programmatic | Supplier Sourcing Analyst | Supplier scoring & selection |
-| `logistics_agent` | llm | Logistics & Procurement Strategist | Builds the procurement plan |
-| `po_approval_agent` | human | Finance Approver | Spend sign-off before binding POs |
-| `purchase_order_agent` | programmatic | Purchase Order Clerk | Issues PDF POs, tracks open POs |
-| `grn_agent` | programmatic | Goods-Receipt Clerk | Receives goods, updates inventory |
-| `supply_report_agent` | programmatic | Supply Chain Analyst | Daily KPI report + unattended run |
-| `trade_compliance_agent` | llm | Trade Compliance Officer | Sanctions / denied-party screening |
-| `tariff_classifier_agent` | llm | Customs Classification Specialist | HTS code + duty / landed cost |
+---
 
-## 3. Data artifacts
+## 2. Entry points (one per real trigger)
 
-| Artifact | Where | Lifecycle |
+| Entry point | Target | Trigger |
 |---|---|---|
-| Structured order | `order_intake_agent` yields | Stashed (in-process + Redis) to survive the HITL wait |
-| Inventory master | `configs/inventory.yaml` (`data_loader.load_inventory`) | Read each run; on-hand updated by `grn_agent` |
-| Supplier catalog + performance | `configs/suppliers.yaml` (`data_loader.load_suppliers`) | Read by `supplier_agent`, `supply_report_agent` |
-| Procurement plan | `logistics_agent` yields | Stashed for recovery after the finance gate |
-| Open-PO registry | `configs/open_pos.yaml` | Written by `purchase_order_agent`, consumed by `grn_agent` + in-transit netting |
-| Purchase-order PDFs | `purchase_orders/PO-*.pdf` | Rendered by `purchase_order_agent` (ReportLab) |
-| Compliance / tariff ledgers | `logs/trade_compliance.db`, `logs/tariff_classifier.db` | SQLite dev stubs — swap for the customer's audit store |
+| `new_requisition` | Cora | A buyer files a requisition |
+| `requisition_status` | Cora | "Where is my requisition?" |
+| `daily_reorder_sweep` | Sourcing | SKUs below reorder point (also a `wake_up` cron, `Asia/Kolkata`) |
+| `source_suppliers` | Sourcing | Ad-hoc supplier sourcing for a set of SKUs |
+| `requester_reply` | requester | HITL resume — the requester answers / confirms in their channel |
 
-## 4. Per-agent spec
+---
 
-- **order_intake_agent** (llm, gpt-4o, temp 0.3) — `@pre_compose(process_context,
-  clean_input, load_extras)` + `@chain(enforce_approval_floor)`. Tools
-  `validate_skus`, `estimate_order_value`, `get_sku_details`. Parses LLM JSON (with
-  a regex text-extraction fallback), normalises items/urgency/order-type, applies
-  quarter-end and high-quantity risk rules, runs rule-based compliance screening,
-  and persists yields to the session stash + Redis before the HITL boundary. The
-  `@chain` floor **re-computes the order value from the supplier catalog** and
-  FORCES `requires_approval=True` / `compliance_status=flagged` when it clears the
-  `HIGH_VALUE_THRESHOLD_USD` budget gate or the `HIGH_QUANTITY_FLOOR` — the LLM
-  cannot clear a high-value order by omitting the flag. Routes all orders to
-  `operations_manager`. OUTPUT CONTRACT lists all 13 yield keys.
-- **operations_manager** (human) — webhook HITL, 600s timeout, default-deny
-  fallback (`timeout_default` → auto-approve only for unattended continuity).
-  Routes approved/timeout to `inventory_agent`. Conditions use only human-meta
-  fields (`human_decision`, `human_message`).
-- **inventory_agent** (programmatic) — `@pre_compose(load_supply_snapshot)`
-  self-pulls the inventory master + open-PO in-transit quantities before the agent
-  runs (the Inventory & Demand Planner reads its own stock levels; it is not
-  spoon-fed). Recovers items from upstream / request_data / session stash / Redis
-  (in priority order) after the human gate, classifies stock status, nets off
-  in-transit quantities, computes optimised reorder quantities (safety buffer +
-  quarter-end + critical uplift, capped at warehouse capacity). Rejection gate
-  halts on a rejected `human_message`. Routes to `supplier_agent` when
-  `item_count > 0`.
-- **supplier_agent** (programmatic) — composite scoring (reliability 40% / lead
-  time 35% / price 25%), live-performance override, region-preference and
-  critical-urgency selection rules. Cross-session memory of supplier trends.
-  Routes to `logistics_agent`.
-- **logistics_agent** (llm, gpt-4o-mini, temp 0.3) — `@chain(validate_plan,
-  score_priorities)`, `@compose(procurement_report, alerts)`, `wait_for:
-  supplier_agent`. Builds the priority-ordered plan (Path A: direct LLM JSON;
-  Path B: from upstream inventory+supplier data), recalculates cost from the
-  structured plan, stashes yields for post-HITL recovery. Routes to
-  `po_approval_agent`. OUTPUT CONTRACT lists all 16 yield keys.
-- **po_approval_agent** (human) — webhook HITL, 600s timeout, `fallback_on_timeout`
-  with default-deny-aware auto-approve for scheduled runs. Routes approved/timeout
-  to `purchase_order_agent`.
-- **purchase_order_agent** (programmatic) — `@chain(register_valid_pos)`. Recovers
-  the plan from upstream / context / stash / Redis, groups lines by supplier, issues
-  PO numbers, renders a branded PDF per PO, handles non-USD currency notes. The
-  `@chain` PO-validity floor then **deterministically rejects any PO** lacking an
-  approval reference or with invalid lines (no supplier / qty ≤ 0 / price ≤ 0):
-  it forces `status=po_validation_failed`, populates `validation_errors`, and
-  registers ONLY validated POs in the open-PO ledger — a binding PO is never
-  issued on bad data. Rejection gate halts on a rejected `human_message`.
-- **grn_agent** (programmatic, entry `receive_goods`) — matches received items to
-  open-PO lines, updates on-hand inventory, closes/partially receives the PO, flags
-  short shipments and quality incidents, busts the data-loader cache. Escalates to
-  `operations_manager` when `requires_ops_review`.
-- **supply_report_agent** (programmatic, `wake_up: 0 8 * * *`, entry `supply_report`)
-  — computes live inventory + supplier KPIs, builds action items, sets
-  `is_scheduled_run`. Routes to `supplier_agent` when `status == report_generated`
-  for an unattended procurement run.
-- **trade_compliance_agent** (llm, gpt-4o-mini, temp 0.0, `enforce_yields`) —
-  `@chain(enforce_compliance_floor)`. LLM proposes sanctions matches; deterministic
-  disposition (blocked / conditional / review / cleared); fails closed on unusable
-  LLM output or missing supplier_id; hash-chained SQLite audit. The `@chain` floor
-  **re-asserts the hard-stop from the structural facts** — any sanctions hit or
-  high-risk country FORCES `requires_hard_stop=True` and `overall_status=blocked`;
-  an un-run screening (no `screening_id` / pending) FORCES compliance review — so
-  the disposition can never be cleared by a downstream edit. Routes hard-stop and
-  compliance-review to `operations_manager` (mutually exclusive conditions).
-  OUTPUT CONTRACT lists all 13 yield keys.
-- **tariff_classifier_agent** (llm, gpt-4o-mini, temp 0.0, `enforce_yields`) —
-  `@chain(enforce_customs_floor)`. LLM proposes HTS codes; deterministic duty
-  resolution (FTA / column-2 / Section 232 surcharge) + landed-cost computation;
-  fails closed when items are submitted but none classify, or confidence < 0.70.
-  The `@chain` floor **re-asserts broker review** — any per-line confidence < 0.70
-  or any Section-232 surcharge FORCES `requires_customs_broker_review=True`. Routes
-  broker-review to `operations_manager`. OUTPUT CONTRACT lists all 10 yield keys.
+## 3. Agents
 
-## 5. Entry points
+### 3.1 Cora — Procurement Coordinator (LLM, pure YAML)
+Owns the case end to end: opens it, hands to Sourcing, keeps live status, routes
+exceptions to the Procurement Lead. **Never sources or approves.**
+Wires: `open_requisition → sourcing`, `escalate → procurement_lead`.
 
-`process_order` (main), `manager_contact`, `check_inventory`, `find_suppliers`,
-`plan_logistics`, `supply_report`, `receive_goods`, `trade_compliance_screen`,
-`tariff_classify`. See README for the full table.
+### 3.2 Sourcing Analyst (LLM · super_agent · playbook · instances · tools)
+Turns a requisition into confidence-scored, quote-traced recommended lines. The
+**super_agent** (dict form: `cost_ceiling`, `wall_clock`) plans/executes/verifies
+across many SKUs. Three **playbook** intents fetched on demand — `rfq` (read
+requisition + stock, pull quotes), `compare` (score options, respect MOQ,
+convert currency), `po_prep` (estimate landed cost, flag budget, set
+`new_supplier`). Day-0 **tools** read the seeded requisition / inventory /
+supplier store and **announce themselves** (`available:false`); a commented `mcp:`
+block wires the real ERP/SRM. **`instances: 3`** fans out the daily reorder
+backlog — each copy claims a **disjoint** batch via the atomic `claim_reorder_batch`
+tool.
 
-## 6. Controls & trust
+**`@chain` coverage floor (fail closed):** a SKU with no supplier, a line missing
+a price/quantity, or a line scored below 0.85 confidence can never be handed on as
+"clean" — it becomes one targeted question to the requester. `agency/sourcing_agent.py`.
 
-- **Two human gates** at the irreversible points — spend commitment
-  (`operations_manager`) and binding PO issuance (`po_approval_agent`). Both have
-  600s timeouts and default-deny-aware fallbacks; conditions reference only
-  human-meta fields.
-- **Deterministic `@chain` floors the LLM can't waive** — five hard floors run
-  *after* the agent and overwrite/OR onto whatever the model decided:
-  high-value/high-quantity approval (`order_intake_agent`, value recomputed from the
-  catalog), PO validity (`purchase_order_agent`, fail-closed on bad lines), sanctions
-  /high-risk hard-stop (`trade_compliance_agent`), customs-broker review on low
-  confidence / Section 232 (`tariff_classifier_agent`), plus the completeness/scoring
-  floor on `logistics_agent`. None can be cleared by prompt wording.
-- **Fail-closed compliance** — `trade_compliance_agent` and `tariff_classifier_agent`
-  route to human review on unusable/low-confidence model output rather than silently
-  clearing.
-- **Rejection gates** in `inventory_agent` and `purchase_order_agent` halt the chain
-  on a rejected human message.
-- **HITL-bridge persistence** — `_shared/session_stash` + Redis carry the order /
-  plan across the human wait (the SDK delivers only human-meta fields on resume).
-- **In-transit netting** — open POs reduce reorder quantities so the mesh never
-  double-orders what's already on the way.
-- **Hash-chained audit** on every compliance screening; per-PO approval reference.
+Wires: `low-confidence + question → requester`, `budget/policy flag →
+procurement_lead`, `clean + new_supplier → compliance`, `clean + known supplier →
+planner`.
 
-## 7. Config pointer
+### 3.3 Compliance Screener (LLM)
+Screens a **new** supplier against sanctions / denied-party / conflict-minerals /
+modern-slavery risk before it is ever used. Empty `sanctions_hits` on no match —
+never a guess. Wires: `hard_stop → procurement_lead`, `review → procurement_lead`,
+`clear → planner`.
 
-All wiring is in `configs/config.yaml`. Env knobs in `env` (3 tiers documented in
-the README): `LEAFMESH_LICENSE_KEY` + `OPENAI_API_KEY` to boot; `REDIS_*` and
-`HIGH_VALUE_THRESHOLD_USD` for host/domain; `HITL_OUTBOUND_URL` and the seed YAML
-files for connectors.
+### 3.4 Procurement Planner (LLM · playbook · finisher-lite)
+Turns the sourcing recommendation into a plan (a draft PO pack), cross-checks
+every line total, the plan total, currency and supplier MOQ against the source,
+and gets the requester's one-look confirmation. One **playbook** intent
+(`build_plan`).
 
-## 8. Reflection / decisions
+**`@chain` cross-check floor (fail closed):** on a mismatch it returns to Sourcing
+with the specific discrepancy — never balances the numbers itself. The back-edge
+is **BOUNDED** by a per-session rework counter (`session_stash`): after
+`_MAX_REWORK` rounds it routes to the Procurement Lead (terminal) instead of
+looping. A confirmed plan renders to `./out`. `agency/procurement_planner_agent.py`.
 
-- **Why merge intake + compliance** — a single LLM pass extracts the order;
-  compliance is deterministic rules on the result, so a second LLM call added cost
-  without judgment.
-- **Why supplier_agent is programmatic, not LLM** — all selection logic is
-  deterministic scoring; the LLM only produced prose nothing consumed.
-- **Why seed YAML, not SQLite, for inventory/suppliers** — system-of-record state
-  belongs in the customer's ERP/WMS/SRM; the YAML loaders are demo stubs with a
-  single swap point (`data_loader`). The two `logs/*.db` ledgers are likewise dev
-  stubs for the compliance audit trail.
-- **Why the cron path auto-approves** — an unattended daily run must not block on a
-  human; `is_scheduled_run` flows through and the finance gate auto-approves while
-  preserving the gate for manual orders.
-- **Open item for the live smoke test** — the post-HITL recovery (stash → Redis →
-  context) and the `@chain`/`@compose` interplay on `logistics_agent` are
-  designed conservatively (multiple fallbacks) and should be confirmed on a running
-  mesh with Redis, since they cannot be proven from config load alone.
+Wires: `awaiting_confirmation → requester`, `mismatch + not exhausted → sourcing`,
+`rework exhausted → procurement_lead`, `confirmed → po_issuer`.
+
+### 3.5 PO Issuer — the FINISHER (programmatic)
+Sits **behind** the finance approval gate. Two phases: from the confirmed plan it
+routes to the approver (`status: routed`); from the approver's reply it issues.
+The **finisher pattern**, enforced in code (`agency/po_issuer_agent.py`):
+1. **Approve-token re-check** — an allow-list + block-list; an unknown/ambiguous
+   verdict **fails closed** (not approved).
+2. **Deterministic invariants** a human can't waive — an approval reference on
+   record, a real supplier per line, positive quantity and unit price.
+3. **Render** the PO pack to `./out/<PO>.md`; on a tripped floor **delete the
+   partial** and record `status: blocked` + `block_reasons` — never a half-issued PO.
+4. **Dev-store recovery** across the HITL gap (upstream → `session_stash` → dev
+   store); the dev send **announces itself** (`submitted_via: dev_store`) — never a
+   fake ERP ack.
+
+Wires: `routed → approver`, `always → audit`.
+
+### 3.6 Human members (first-class)
+`requester_human`, `approver_human`, `procurement_lead_human` — each `dual` on the
+webhook boundary, reached in their own channel. **Every gate default-denies:**
+`fallback_on_timeout: true` + a `held_for_review` fallback routed to the audit sink
+(directly for the approver / lead; via the Manager supervisor for the requester).
+Silence never advances a requisition. `dual` is on the human boundary only; every
+downstream peer they call is `chain` — no `dual→dual` ping-pong.
+
+### 3.7 WORM audit (external, custom sink)
+`procurement_audit_logger_agent` — hash-chained, append-only; the terminus of
+every path. Registered in `main.py` via `sdk.intelligence(...)`.
+`agency/_shared/audit_logger.py`.
+
+---
+
+## 4. Controls & correctness (2.4.131)
+
+- Every agent has an explicit `name:`; every LLM prompt ends with an OUTPUT
+  CONTRACT naming exactly its `yields` keys.
+- `dual` only on the human/boundary agents; all AI specialists are `chain`
+  (0 dual warnings at load).
+- The `mcp` ERP/SRM block ships **commented** (the SDK rejects an empty-URL http
+  mcp at load); day-0 dev-store tools cover the same actions.
+- `max_tool_calls_per_message: 15` on Sourcing (a long read chain across SKUs;
+  the default 5 truncates silently).
+- `super_agent` in **dict** form only; `wake_up` carries a `timezone` (crons fire
+  in UTC otherwise); one cron line + `instances` for the fan-out.
+- `requirements.txt`: `leafmesh>=2.4.131` + `apscheduler>=3.10`, core-only.
+
+---
+
+## 5. Verification
+
+- `python validate_config.py` → structure, wiring, yields↔prompt, dead-code: clean.
+- Day-0 load on 2.4.131 → **0 dual warnings**, all three `*_agent.py` bound.
+- Finisher fail-closed proven with `asyncio.run`: unknown/blocked/invalid verdicts
+  → `blocked` + partial deleted; explicit approval + valid plan → issued + pack on
+  disk; plan recovered across the HITL gap from the stash.
+- **The pod's discipline in one sentence:** agents produce, humans decide, systems
+  record — and silence never advances anything.

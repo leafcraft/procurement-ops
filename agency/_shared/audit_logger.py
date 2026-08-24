@@ -138,19 +138,3 @@ def register(mesh: Any, agent_name: str = "procurement_audit_logger_agent") -> b
     mesh.intelligence(agent_name)(procurement_audit_logger_agent)
     logger.info("[audit] hash-chained WORM sink registered via mesh.intelligence()")
     return True
-
-
-# ── Legacy path (SDK < 2.4): connector registry ──────────────────────
-try:  # pragma: no cover — exercised only on old SDKs
-    from leafmesh.external.base import ExternalConnector
-    from leafmesh.external.registry import register_connector
-
-    @register_connector("custom")
-    class ProcurementAuditLoggerConnector(ExternalConnector):  # type: ignore[misc]
-        """Append-only hash-chained audit sink (legacy connector API)."""
-
-        async def execute(self, input_data: dict[str, Any],
-                          config: dict[str, Any]) -> dict[str, Any]:
-            return write_audit_entry(input_data, config)
-except ImportError:
-    pass

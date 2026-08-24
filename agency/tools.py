@@ -1,148 +1,125 @@
-"""Global tools available to LLM agents.
+"""Global tools for the procurement-ops pod.
 
-Register tools here with @global_tool — the LeafMesh SDK auto-discovers
-this file and makes these tools available to any agent that lists them
-under `tools:` in config.yaml.
+These are the sourcing agent's day-0 tool surface — the tools it calls, in the
+turn, to PULL a requisition, read stock, and find suppliers. Each reads the dev
+store (seed data) so the pod runs with no connector wired, and **each announces
+itself**: when there is no real source and no seed, it returns `available: false`
+and says why — never a synthetic success that looks like a real read. To go live,
+wire the ERP/SRM `mcp` block in config.yaml (each named action becomes its own
+tool); these dev tools are the fallback contract.
 """
 import os
 
 from leafmesh import global_tool, LeafMeshLogger
-from agency.data_loader import load_inventory, get_suppliers_for_sku
+
+try:
+    from ._shared import store
+except ImportError:  # pragma: no cover — direct-run fallback
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _shared import store  # type: ignore
 
 logger = LeafMeshLogger(__name__)
 
-# Budget gate threshold — surfaced as an env knob (see env). Default $50,000.
+# Budget gate threshold (USD) — surfaced as an env knob (see env). Default $50,000.
 HIGH_VALUE_THRESHOLD = int(os.getenv("HIGH_VALUE_THRESHOLD_USD", "50000"))
 
 
-@global_tool
-def validate_skus(items: list) -> dict:
-    """Check whether each SKU in the order exists in the inventory catalog.
+def _connector_wired() -> bool:
+    """True if a real procurement connector is configured (ERP/SRM mcp URL set)."""
+    return bool(os.getenv("ERP_MCP_URL") or os.getenv("SRM_MCP_URL"))
 
-    Returns a summary with valid SKUs, unknown SKUs, and a flag indicating
-    whether the order contains any unrecognised items. The LLM uses this
-    to add 'unverified_sku' to risk_flags when unknown items are present.
+
+@global_tool(category="sourcing")
+def read_requisition(requisition_id: str) -> dict:
+    """Read a purchase requisition: requester, cost centre, class, and line items
+    (sku, quantity, need-by date).
+
+    When no real connector is wired, reads the seed store. Announces
+    `available: false` if there is genuinely nothing to read.
 
     Args:
-        items: List of order items, each with a 'sku' key.
+        requisition_id: The requisition to read (e.g. "REQ-DEMO-001").
     """
-    inventory = load_inventory()
-    valid, unknown = [], []
-
-    for item in items:
-        sku = str(item.get("sku", "")).strip().upper()
-        if not sku:
-            continue
-        if sku in inventory:
-            record = inventory[sku]
-            valid.append({
-                "sku": sku,
-                "name": record.get("name", ""),
-                "category": record.get("category", ""),
-                "on_hand": record.get("on_hand", 0),
-                "reorder_point": record.get("reorder_point", 0),
-                "safety_stock": record.get("safety_stock", 0),
-            })
-        else:
-            unknown.append(sku)
-
-    logger.info(f"validate_skus — valid={len(valid)}, unknown={len(unknown)}")
-    return {
-        "valid_skus": valid,
-        "unknown_skus": unknown,
-        "has_unknown_skus": len(unknown) > 0,
-        "total_checked": len(valid) + len(unknown),
-    }
+    result = store.read_requisition(str(requisition_id).strip())
+    if not result.get("available") and _connector_wired():
+        return {"available": False, "reason": "connector wired but returned nothing for this requisition"}
+    logger.info(f"read_requisition id={requisition_id} available={result.get('available')}")
+    return result
 
 
-@global_tool
-def estimate_order_value(items: list) -> dict:
-    """Estimate total order value using the supplier catalog's lowest unit price.
-
-    Useful for flagging budget_threshold_exceeded early during intake,
-    before the supplier and logistics agents run their full analysis.
+@global_tool(category="sourcing")
+def check_inventory(sku: str) -> dict:
+    """Read the current on-hand / reorder position for one SKU, with a derived
+    stock status (critical / low / normal).
 
     Args:
-        items: List of order items, each with 'sku' and 'quantity' keys.
+        sku: The SKU to check (e.g. "SKU-001").
+    """
+    result = store.read_inventory(str(sku).strip().upper())
+    if not result.get("available") and _connector_wired():
+        return {"available": False, "reason": "connector wired but returned nothing for this SKU"}
+    return result
+
+
+@global_tool(category="sourcing")
+def find_suppliers(sku: str) -> dict:
+    """List the qualified supplier options for one SKU (price, lead time,
+    reliability, MOQ, currency, region, whether the supplier is on file).
+
+    Returns `available: false` when no supplier is on file — a SKU with no
+    supplier is a QUESTION for the requester, never a guessed vendor.
+
+    Args:
+        sku: The SKU to source (e.g. "SKU-001").
+    """
+    result = store.find_suppliers(str(sku).strip().upper())
+    if not result.get("available") and _connector_wired():
+        return {"available": False, "reason": "connector wired but returned no supplier for this SKU"}
+    return result
+
+
+@global_tool(category="sourcing")
+def estimate_landed_cost(lines: list) -> dict:
+    """Estimate total spend for a set of recommended lines using each line's
+    unit price × quantity, and flag whether it crosses the budget-approval
+    threshold.
+
+    Args:
+        lines: List of lines, each with 'unit_price' and 'quantity' (and
+            optionally 'sku').
     """
     total = 0.0
-    line_estimates = []
-
-    for item in items:
-        sku = str(item.get("sku", "")).strip().upper()
-        qty = int(item.get("quantity", 0))
-        if not sku or qty <= 0:
+    detail = []
+    for ln in lines or []:
+        if not isinstance(ln, dict):
             continue
-
-        suppliers = get_suppliers_for_sku(sku)
-        if not suppliers:
-            line_estimates.append({"sku": sku, "quantity": qty, "unit_price": None, "line_total": None})
-            continue
-
-        prices = [s.get("unit_price", 0) for s in suppliers if s.get("unit_price")]
-        if not prices:
-            line_estimates.append({"sku": sku, "quantity": qty, "unit_price": None, "line_total": None})
-            continue
-
-        unit_price = min(prices)
-        line_total = round(unit_price * qty, 2)
+        qty = int(ln.get("quantity", 0) or 0)
+        price = float(ln.get("unit_price", 0) or 0)
+        line_total = round(price * qty, 2)
         total += line_total
-        line_estimates.append({
-            "sku": sku,
-            "quantity": qty,
-            "unit_price": unit_price,
-            "line_total": line_total,
-        })
-
+        detail.append({"sku": ln.get("sku", ""), "quantity": qty,
+                       "unit_price": price, "line_total": line_total})
     total = round(total, 2)
-    logger.info(f"estimate_order_value — estimated total: ${total:,.2f}")
-    return {
-        "line_estimates": line_estimates,
-        "estimated_total": total,
-        "estimated_total_formatted": f"${total:,.2f}",
-        "exceeds_budget_threshold": total > HIGH_VALUE_THRESHOLD,
-        "budget_threshold": HIGH_VALUE_THRESHOLD,
-    }
+    logger.info(f"estimate_landed_cost total=${total:,.2f}")
+    return {"line_estimates": detail, "estimated_total": total,
+            "estimated_total_formatted": f"${total:,.2f}",
+            "exceeds_budget_threshold": total > HIGH_VALUE_THRESHOLD,
+            "budget_threshold": HIGH_VALUE_THRESHOLD}
 
 
-@global_tool
-def get_sku_details(sku: str) -> dict:
-    """Return full inventory details for a single SKU.
+@global_tool(category="sourcing")
+def claim_reorder_batch(count: int) -> dict:
+    """Atomically claim up to `count` SKUs off the shared reorder backlog so that
+    parallel copies of the sourcing agent (`instances: N`) each pull a DISJOINT
+    batch instead of duplicating work.
 
-    Useful when the LLM needs to look up the current stock level, category,
-    or ABC class of a specific item mentioned in the order message.
+    Returns the claimed SKUs; an empty list means the backlog is drained (a
+    perfectly ordinary outcome — not an error).
 
     Args:
-        sku: The SKU identifier (e.g. 'SKU-001').
+        count: How many backlog SKUs this copy should claim (e.g. 3).
     """
-    inventory = load_inventory()
-    sku = sku.strip().upper()
-    record = inventory.get(sku)
-
-    if not record:
-        logger.info(f"get_sku_details — SKU not found: {sku}")
-        return {"found": False, "sku": sku}
-
-    on_hand = record.get("on_hand", 0)
-    safety = record.get("safety_stock", 0)
-    reorder = record.get("reorder_point", 0)
-
-    if on_hand == 0 or on_hand < safety:
-        stock_status = "critical"
-    elif on_hand < reorder:
-        stock_status = "low"
-    else:
-        stock_status = "normal"
-
-    return {
-        "found": True,
-        "sku": sku,
-        "name": record.get("name", ""),
-        "category": record.get("category", ""),
-        "abc_class": record.get("abc_class", ""),
-        "on_hand": on_hand,
-        "safety_stock": safety,
-        "reorder_point": reorder,
-        "unit_cost": record.get("unit_cost", 0),
-        "stock_status": stock_status,
-    }
+    claimed = store.claim_backlog(int(count or 0))
+    logger.info(f"claim_reorder_batch count={count} claimed={len(claimed)}")
+    return {"available": True, "claimed": claimed, "claimed_count": len(claimed)}
