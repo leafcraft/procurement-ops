@@ -27,8 +27,11 @@ line, total and MOQ against the source and returns work to Sourcing on a mismatc
 rather than balancing the books itself — and that back-edge is **bounded**, so a
 rework loop can never spin forever. The PO Issuer **re-checks that finance
 actually approved** before it issues anything, and **deletes a half-issued PO** if
-its floor trips. **Silence never advances a requisition** — every gate
-default-denies. Every decision, screen, approval and issued PO lands in a
+its floor trips. **Silence never advances a requisition** — if nobody answers
+within the reply window, the Inbox card closes and the ticket records that no
+reply came; nothing is approved or issued, and nobody is chased automatically.
+**Above $50,000 the pod does not issue a PO** — the Sourcing floor flags it and
+the Procurement Lead runs a formal tender. Every decision, screen, approval and issued PO lands in a
 hash-chained WORM ledger.
 
 ## Why it works in an organization
@@ -50,7 +53,7 @@ requisition?" answer, and a tamper-evident audit trail for every commitment.
 | Agent | Role (human job title) | Responsibilities | Can perform |
 |---|---|---|---|
 | `procurement_coordinator_agent` | Procurement Coordinator | Owns the requisition end to end; opens it, keeps live status, is the requester's one contact | LLM; orchestrates Sourcing→Compliance→Planner→PO Issuer; routes exceptions to the Procurement Lead; **never sources or approves** |
-| `sourcing_agent` | Sourcing Analyst | Reads the requisition + stock, sources suppliers per SKU with a confidence score, flags budget/policy risk | LLM + **super_agent** (autonomous multi-SKU) + **instances** (backlog fan-out, atomic claim) + **playbook** (rfq / compare / po_prep) + sourcing tools; `@chain` **coverage floor** (fail closed) |
+| `sourcing_agent` | Sourcing Analyst | Reads the requisition + stock, sources suppliers per SKU with a confidence score, flags budget/policy risk | LLM + **super_agent** (autonomous multi-SKU) + **scaling.copies** (3 copies, backlog fan-out, atomic claim) + **playbook** (rfq / compare / po_prep) + sourcing tools; `@chain` **coverage floor** (fail closed) |
 | `trade_compliance_agent` | Compliance Screener | Screens a **new** supplier against sanctions / denied-party / conflict-minerals / modern-slavery risk before use | LLM; routes a hard stop or a review need to the Procurement Lead, a clear screen to the Planner |
 | `procurement_planner_agent` | Procurement Planner | Builds the plan from sourced lines, cross-checks totals/MOQs, gets the requester's one-look confirmation | LLM + **playbook**; `@chain` **cross-check floor**; renders the draft to `./out`; **bounded** back-edge to Sourcing |
 | `po_issuer_agent` | PO Issuer | Routes finance approval, issues + registers the PO, records the send + ledger | Programmatic **finisher**; approve-token re-check → invariants → render pack → **delete-on-block** → WORM ledger |
@@ -59,8 +62,22 @@ requisition?" answer, and a tamper-evident audit trail for every commitment.
 | `approver_human` | Finance approver (Human) | Approves or rejects the purchase order (a financial commitment) | Human gate |
 | `procurement_audit_logger_agent` | WORM audit | Hash-chains every decision, screen, approval, issued PO, and held gate | External (custom sink); terminus |
 
-The **LeafMesh Manager** supervises — it reads every hand-off and escalates
-stalls / policy calls / approval timeouts to the Procurement Lead automatically.
+Reply windows (`human_timeout_seconds`): Requester 2 days, Finance approver 2
+days, Procurement Lead 3 days. The finance approver signs POs up to $50,000
+(`HIGH_VALUE_THRESHOLD_USD` in `.env`); the PO Issuer only accepts an approval
+from the approver seat, never from the requester.
+
+The **LeafMesh Manager** supervises. It escalates to the Procurement Lead when an
+agent fails with an error a retry cannot fix (auth, bad request, credit, bad
+config), when 5 different agents fail in one session, or when restarts run out.
+A broken hand-off contract raises an alert only. Budget/policy flags, sanctions
+hits and an exhausted rework loop reach the Lead on the agents' own wires.
+
+The Sourcing Analyst's three copies split the reorder backlog with her own atomic
+claim tool (`claim_reorder_batch`). leafmesh 2.4.484's `scaling.copies.mode: auto`
+with `claim_tool:` could replace this manual split (the mesh would claim each item
+and start a copy only when there is one); that switch is the owner's decision and
+is not made in this template.
 
 ## Configuration — what to set, in three tiers
 
@@ -76,16 +93,24 @@ requisition/inventory/supplier reads and the PO send use dev stand-ins that
 | `ANTHROPIC_API_KEY` | Sourcing + Planner (Claude) | **Required.** |
 | `OPENAI_API_KEY` | Cora + Compliance + Manager (`gpt-4o-mini`) | **Required** unless you change the models. |
 | `REDIS_HOST` / `PORT` / `PASSWORD` | State store | Defaults to `localhost:6379`. `docker run -d -p 6379:6379 redis:7-alpine`. |
-| `HITL_OUTBOUND_URL` | Where human members are notified | Defaults to a local stub. |
+| *(no setting)* — human members | Human approvals | Answer in Studio's Inbox. To notify an external tool instead, create a vault connection (an "Add custom" record on the Infrastructure page, service type 'Outbound webhook') and set `webhook_config: {connection: <name>}` on the seat. |
 
-### Tier 2 — real procurement connectors (set the URL, uncomment the `mcp` block)
-| Setting | Enables |
+### Tier 2 — real procurement connectors (a vault connection, then uncomment the `mcp` block)
+| Vault connection (Infrastructure → Integrations → MCP) | Enables |
 |---|---|
-| `ERP_MCP_URL` / `_TOKEN` | Real requisition + inventory reads, PO registration (SAP / Oracle / NetSuite) |
-| `SRM_MCP_URL` / `_TOKEN` | Real supplier catalog + RFQ (Coupa / SAP Ariba) |
+| `erp_mcp` — your ERP's MCP server (address + token) | Real requisition + inventory reads, PO registration (SAP / Oracle / NetSuite) |
+| `srm_mcp` — your SRM's MCP server (address + token) | Real supplier catalog + RFQ (Coupa / SAP Ariba) |
 
-> ⚠️ The SDK rejects an `mcp` block with an **empty** URL at load, so the block
-> ships **commented** in `configs/config.yaml`. Fill the URL, then uncomment.
+> The server address and token are entered **only in the vault** — the SDK
+> refuses a `url:` / `token:` written in the config (even as `${ENV_VAR}`). The
+> `mcp` block ships **commented** in `configs/config.yaml`, already picking
+> `connection: erp_mcp` / `connection: srm_mcp`: create the connections, then
+> uncomment — in the file before the first start, in Studio's YAML editor after
+> it (applies live, no restart; see *Changing the configuration after the first
+> start*). Nothing goes in `.env`: `agency/tools.py` checks whether the vault
+> record `erp_mcp` or `srm_mcp` exists, only to word an empty dev-store answer.
+> The PO Issuer still registers POs in the dev store (`submitted_via: dev_store`)
+> until you swap `store.register_open_po` for your ERP call (Tier 3).
 
 ### Tier 3 — direct ERP PO posting replaces the dev-store send (later).
 
@@ -110,7 +135,11 @@ curl -X POST http://127.0.0.1:18820/api/mesh/request \
 
 `REQ-DEMO-001` includes a SKU with no supplier on file on purpose — watch the
 Sourcing Analyst ask the requester rather than guess. `REQ-DEMO-002` chooses a
-**new** EU supplier — watch it route through compliance first. On approval, the PO
+**new** EU supplier — watch it route through compliance first. `REQ-DEMO-003` is
+the clean path ($3,375.00, on-file suppliers, MOQs met). `REQ-DEMO-004` is
+$62,500 — above the $50,000 limit, so it goes to the Procurement Lead. Each human gate
+(requester question, approver sign-off) lands in **Studio → Inbox** — answer it
+there. On approval, the PO
 Issuer renders the PO pack to `./out/` and registers it in `./data/open_pos.json`.
 
 > Packaging note: `pip install leafmesh` (core) includes all LLM providers and
@@ -122,3 +151,33 @@ Issuer renders the PO pack to `./out/` and registers it in `./data/open_pos.json
 
 *Built with `create-leafmesh`. The config is the department; the PRD is the brief.*
 *Design doctrine: `.claude/skills/leafmesh/building-agents-thoroughly.md`.*
+
+## Changing the configuration after the first start
+
+`configs/config.yaml` is only the first-start seed. On the first start (an empty store) the agency imports it as version 1 and from then on keeps its configuration in the store. After that the file is not read again: an edit to it is **not** applied, even after a restart (the boot log says "that edit was NOT applied").
+
+To change a running agency:
+
+- **Studio** — its settings pages, or the raw YAML editor.
+- **API** — `PUT /api/yaml/raw` with an `X-API-Key` header and the body `{"yaml_content": "<the whole YAML>", "save_to_disk": true}`, or `PATCH /api/yaml/config` with `{"updates": {...}, "save_to_disk": true}`.
+
+Each save is a new version and applies live on every pod — no restart. (A few settings, such as brokers, make the agency reload itself in place within seconds.) So wherever this README or a comment says "uncomment X in `configs/config.yaml`", do it in the file before the first start, or in Studio's YAML editor after it.
+
+## Where the data store is set
+
+From leafmesh 2.4.482 the store (Redis or Postgres) is set **only in `.env`** — never in `configs/config.yaml`. A `persistence:` block in the YAML is ignored with a warning on leafmesh 2.4.482–2.4.485; from 2.4.486 the agency refuses to start if that block differs from `.env`, and names each `.env` line to add. The project's `.env` sets the store explicitly (`LEAFMESH_STORE`, `LEAFMESH_AGENCY_NAME`, `REDIS_*`).
+
+- Redis (default): `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_DB`; optional `REDIS_DEFAULT_TTL`, `REDIS_SESSION_TTL`, `REDIS_SSL*`, `REDIS_CLUSTER_NODES`.
+- Postgres instead: `LEAFMESH_STORE=postgres` plus `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` (optional `POSTGRES_SSLMODE`).
+- Or the whole server in one value: `REDIS_URL=redis://user:pw@host:6379/0` (`rediss://` turns TLS on) or `DATABASE_URL=postgresql://user:pw@host:5432/db`. The single names fill in what the URL leaves out.
+- With Docker Compose the app reaches Redis as `redis` (the service name); compose sets that for you.
+- Check it in Studio → **Infrastructure → Datastores**: it shows whether the store is reachable (never the address or password).
+
+## Your vault key — back it up
+
+`create-leafmesh` put a `LEAFMESH_VAULT_KEY` in your `.env` when it made this project. It is the master key that encrypts every connection and credential you store in the vault (in Redis / Postgres).
+
+- **Back it up like a master password.** Lose it and every stored connection has to be entered again.
+- **Never change or regenerate it** for an existing project — a new key locks the existing vault. To change it, use `leafmesh vault rotate-key`.
+- Every copy of the app (every replica) must get the **same** value. Docker Compose passes it in from `.env` as an environment variable.
+- Never commit `.env` (it is already in `.gitignore`).

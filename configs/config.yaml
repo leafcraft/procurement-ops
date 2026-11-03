@@ -6,8 +6,10 @@
 # finance approval -> PO issued & registered -> live status.
 #
 # The pod is a TEAM, not a pipeline. Every wire is conditional; every hand-off is a
-# finished contract; every human gate default-denies on silence; the finisher
-# issues the real PO and fails closed; the WORM sink is the terminus. Systems
+# finished contract; nothing is approved or issued on silence; the finisher
+# issues the real PO and fails closed; the WORM sink is the terminus.
+# Delegation of authority: a requisition above $50,000 (HIGH_VALUE_THRESHOLD_USD)
+# is not issued by the pod — it goes to the Procurement Lead for a formal tender. Systems
 # (ERP / SRM — SAP Ariba, Coupa, Oracle) are TOOLS inside agents, never members.
 #
 # Design doctrine: .claude/skills/leafmesh/building-agents-thoroughly.md
@@ -20,21 +22,15 @@ environment: development
 debug: true
 log_level: INFO
 
-persistence:
-  backend: redis
-  redis:
-    session_ttl: 7200
-    host: "${REDIS_HOST:localhost}"
-    port: ${REDIS_PORT:6379}
-    password: "${REDIS_PASSWORD:}"
-
 auto_discover:
   directory: ./agency
   pattern: '*_agent.py'
 
-# The Manager is the SUPERVISOR — it watches every hand-off and escalates stalls /
-# contract violations / repeated errors to the Procurement Lead. It is not a router
-# in the middle of the team.
+# The Manager is the SUPERVISOR. It escalates to the Procurement Lead when an
+# agent fails with an error that a retry cannot fix (auth, bad request, credit,
+# bad config), when 5 different agents fail in one session, or when restarts
+# run out. A broken hand-off contract only raises an alert. It does not chase
+# an unanswered approval. It is not a router in the middle of the team.
 manager:
   model: gpt-4o-mini
   domain: generic
@@ -42,11 +38,10 @@ manager:
     This mesh runs purchase procurement. A successful requisition flows
     Cora (coordinate) -> Sourcing (source, confidence-scored) -> Compliance
     (screen new suppliers) -> Planner (build the plan, requester confirms) ->
-    approval (finance) -> PO Issuer (issue + register). Escalate to the
-    Procurement Lead when: a requisition loops on re-sourcing more than its bound,
-    a policy/budget flag or a sanctions hit is raised, an approval round times out,
-    or any agent hands off a malformed artifact. Silence never advances a
-    requisition.
+    approval (finance) -> PO Issuer (issue + register). Budget/policy flags
+    (above $50,000), a sanctions hit or review, and a plan that still does not
+    tie out after two rework rounds go to the Procurement Lead on the agents'
+    own wires. Nothing is approved or issued on silence.
   routing:
     mode: static
   escalation:
@@ -56,15 +51,12 @@ manager:
     auto_escalate:
       max_retries: 3
       max_errors_per_session: 5
-      timeout_threshold: 2
-
-mesh:
-  call_timeout: 150
 
 # 2.4.131 runtime block — the ONE non-default this pod genuinely needs: sourcing
 # across many SKUs (super_agent) can run long. Everything else stays default
 # (omission is meaningful; we do not pre-fill defaults).
 timeouts:
+  mesh_call_default_timeout_s: 150
   llm_hard_timeout_s: 300
 
 # ── Entry points — one per real-world trigger ────────────────────────────────
@@ -136,7 +128,7 @@ agents:
   # to the requester, never a made-up vendor in a PO. Loops its tools until the
   # recommendation is CLEAN, then hands it to the Planner (or to Compliance when a
   # NEW supplier is chosen). super_agent = autonomous plan/execute/verify across
-  # many SKUs. instances = fan out the reorder backlog. @chain = the coverage floor.
+  # many SKUs. scaling.copies = fan out the reorder backlog. @chain = the coverage floor.
   # ─────────────────────────────────────────────────────────────────────────
   sourcing_agent:
     name: sourcing_agent
@@ -148,7 +140,7 @@ agents:
     description: "Sourcing Analyst — reads the requisition, sources suppliers per SKU with confidence, flags budget/policy."
     # Scheduled reorder sweep — daily, in the company's timezone (NOT UTC). Also
     # reachable via the daily_reorder_sweep entry point. ONE cron line; the fan-out
-    # comes from `instances`, not extra crons. Set `timezone` to your business zone.
+    # comes from `scaling.copies`, not extra crons. Set `timezone` to your business zone.
     wake_up: "0 8 * * *"
     timezone: "Asia/Kolkata"
     wake_up_input:
@@ -156,8 +148,11 @@ agents:
     # Parallel copies per activation — on the daily sweep each copy claims a
     # DISJOINT batch of the reorder backlog via the atomic claim_reorder_batch tool
     # (agency/tools.py), so N copies split the work instead of duplicating it.
-    instances: 3
-    instances_handoff: last
+    scaling:                      # 2.4.484 (was instances / instances_handoff)
+      copies:
+        mode: fixed
+        count: 3
+        handoff: last
     super_agent:                     # DICT form = the tuning path (2.4.123+); the ONLY way to tune it
       cost_ceiling: 120000
       wall_clock: 900
@@ -185,9 +180,9 @@ agents:
     yields:
       sourcing_clean: "boolean"
       requisition_class: "string"
-      low_confidence_skus: "array"
-      sourcing_flags: "array"
-      recommended_lines: "array"
+      low_confidence_skus: {type: array, items: string}   # e.g. "SKU-003:no_supplier"
+      sourcing_flags: {type: array, items: string}        # e.g. "budget_threshold_exceeded"
+      recommended_lines: {type: array, items: object}     # sku, supplier, unit_price, quantity, currency, lead_time_days, moq, confidence
       new_supplier: "boolean"
       question_for_requester: "string"
     # Playbook — the CRAFT, fetched on demand. Only `description` rides in the
@@ -219,8 +214,9 @@ agents:
         description: "How to prepare clean lines for the planner and flag risk."
         responsibility: |
           1. estimate_landed_cost across the chosen lines; if it crosses the
-             budget threshold, raise a `budget_threshold_exceeded` flag — do NOT
-             waive it.
+             budget threshold ($50,000), raise a `budget_threshold_exceeded`
+             flag — do NOT waive it (the floor re-checks and adds it). Above
+             the threshold the Procurement Lead runs a formal tender.
           2. Set `new_supplier` true if any chosen supplier is not on file, so the
              pod screens it before use.
           3. Emit recommended_lines with sku, supplier, unit_price, quantity,
@@ -231,20 +227,21 @@ agents:
     # (available:false) when it has no real source. See agency/tools.py.
     tools: [read_requisition, check_inventory, find_suppliers, estimate_landed_cost, claim_reorder_batch]
     tool_categories: [sourcing]
-    # ── To wire a real ERP/SRM, uncomment and set the URLs (each named action
-    #    under `use:` becomes its own tool, e.g. erp_read_requisition). NOTE: the
-    #    SDK rejects an http mcp block with an EMPTY url at load, so this ships
-    #    commented — fill the URL, then uncomment. ──
+    # ── To wire a real ERP/SRM: create the vault connections 'erp_mcp' and
+    #    'srm_mcp' on Infrastructure → Integrations → MCP (each an MCP server's
+    #    connection: its address + token), then uncomment — here before the first
+    #    start, in Studio's YAML editor after it (applies live, no restart). Each
+    #    named action under `use:` becomes its own tool, e.g. erp_read_requisition. The
+    #    address and token live only in the vault — never write url:/token:
+    #    here. ──
     # mcp:
-    #   - transport: http
-    #     url: "${ERP_MCP_URL}"
-    #     token: "${ERP_MCP_TOKEN:}"
+    #   - connection: erp_mcp
+    #     transport: http
     #     use: [read_requisition, read_inventory, register_po]
     #     name: erp
     #     timeout: 30
-    #   - transport: http
-    #     url: "${SRM_MCP_URL}"
-    #     token: "${SRM_MCP_TOKEN:}"
+    #   - connection: srm_mcp
+    #     transport: http
     #     use: [find_suppliers, request_quote]
     #     name: srm
     #     timeout: 30
@@ -288,7 +285,7 @@ agents:
        "requires_review": ..., "screened_supplier": ...}
     yields:
       screening_status: "string"      # clear | review | hard_stop
-      sanctions_hits: "array"
+      sanctions_hits: {type: array, items: string}   # list name + matched entry, e.g. "OFAC SDN: <entity>"
       requires_hard_stop: "boolean"
       requires_review: "boolean"
       screened_supplier: "string"
@@ -339,7 +336,7 @@ agents:
       confirmed: "boolean"
       rework_exhausted: "boolean"     # set by enforce_cross_check_floor when the back-edge is exhausted
       artifact_path: "string"
-      recommended_lines: "array"
+      recommended_lines: {type: array, items: object}
       requisition_id: "string"
     playbook:
       - intent: build_plan
@@ -368,7 +365,7 @@ agents:
   # PO Issuer (programmatic FINISHER). Routes the confirmed plan through finance
   # approval, issues the formal PO, registers it as an open PO, records the
   # supplier-facing send, and appends an append-only ledger entry. This is the
-  # actuator BEHIND the human approval gate: it re-checks approval (fail closed on
+  # actuator BEHIND the human approval step: it re-checks approval (fail closed on
   # an unknown verdict), renders the PO pack to ./out, deletes it on a blocked
   # floor, and never approves or issues itself. See agency/po_issuer_agent.py.
   # ─────────────────────────────────────────────────────────────────────────
@@ -381,10 +378,10 @@ agents:
       routed_for_approval: "boolean"
       approved: "boolean"
       po_issued: "boolean"
-      po_numbers: "array"
-      artifact_paths: "array"
+      po_numbers: {type: array, items: string}
+      artifact_paths: {type: array, items: string}
       status: "string"          # routed | issued | blocked
-      block_reasons: "array"
+      block_reasons: {type: array, items: string}
     can_call:
       - agent: approver_human
         condition: "calling_agent_response.status == 'routed'"
@@ -393,7 +390,12 @@ agents:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Human members — first-class, reached in the channel they already live in.
-  # Every gate DEFAULT-DENIES on timeout (fallback -> held_for_review -> audit).
+  # Nothing is approved or issued on silence. If nobody answers within the
+  # seat's human_timeout_seconds, the request waits no longer: its Inbox card
+  # closes and the ticket records that no reply came. Nobody is chased
+  # automatically. fallback_on_timeout / fallback_response below declare the
+  # intent (held_for_review -> audit); on leafmesh 2.4.486 a dual seat's
+  # timeout does not route it yet.
   # `dual` belongs on the human/webhook boundary agent ONLY (nuances #17); every
   # downstream peer these humans call is `chain`, so there is no dual->dual.
   # ─────────────────────────────────────────────────────────────────────────
@@ -401,7 +403,7 @@ agents:
   requester_human:
     name: requester_human
     agent_type: human
-    human_interface: webhook
+    human_interface: "default"   # the Inbox (no vault connection needed)
     communication_type: dual
     human_timeout_seconds: 172800   # 2 days to answer a question / confirm
     description: "Requester / buyer — answers sourcing questions, confirms the plan."
@@ -409,12 +411,6 @@ agents:
     fallback_response:
       human_decision: held
       human_message: held_for_review
-    webhook_config:
-      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
-      outbound_headers: {Content-Type: "application/json"}
-      outbound_timeout: 30
-      max_retries: 1
-      retry_delay: 2
     can_call:
       - agent: sourcing_agent
         condition: "calling_agent_response.from_agent == 'sourcing_agent'"
@@ -428,45 +424,37 @@ agents:
   approver_human:
     name: approver_human
     agent_type: human
-    human_interface: webhook
+    human_interface: "default"   # the Inbox (no vault connection needed)
     communication_type: dual
-    human_timeout_seconds: 259200   # 3 days; the PO Issuer chases reminders
-    description: "Finance approver — approves or rejects the purchase order (a financial commitment)."
+    human_timeout_seconds: 172800   # 2 days — finance clears PO approvals within two working days
+    description: "Finance approver — approves or rejects the purchase order (a financial commitment, up to $50,000)."
     fallback_on_timeout: true
     fallback_response:
       human_decision: held
       human_message: held_for_review
-    webhook_config:
-      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
-      outbound_headers: {Content-Type: "application/json"}
-      outbound_timeout: 30
     can_call:
       - agent: po_issuer_agent
-        condition: "calling_agent_response.human_message == 'approved'"
-      # On silence/hold, record it and let the Manager SUPERVISOR escalate to the
-      # Procurement Lead (manager.escalation.targets) — no hardcoded human→human wire.
+        condition: "calling_agent_response.human_message == 'approved' or calling_agent_response.human_message == 'approve'"
+      # A reject or a hold is recorded in the audit sink and stops there.
+      # No human->human wire; nobody is chased automatically.
       - agent: procurement_audit_logger_agent
-        condition: "calling_agent_response.human_message == 'held_for_review'"
+        condition: "calling_agent_response.human_message == 'rejected' or calling_agent_response.human_message == 'reject' or calling_agent_response.human_message == 'hold' or calling_agent_response.human_message == 'held_for_review'"
     yields:
-      human_message: "string"       # approved | rejected | held_for_review
+      human_message: "string"       # approved | rejected | hold | held_for_review
     inputs:
       po_pack: "object"
 
   procurement_lead_human:
     name: procurement_lead_human
     agent_type: human
-    human_interface: webhook
+    human_interface: "default"   # the Inbox (no vault connection needed)
     communication_type: dual
     human_timeout_seconds: 259200
-    description: "Accountable owner — reviews exceptions, owns policy/budget calls, decides every gate. Everything that leaves the pod."
+    description: "Accountable owner — reviews exceptions (sanctions, budget above $50,000 → formal tender, failed rework); the decision is recorded in the audit sink."
     fallback_on_timeout: true
     fallback_response:
       human_decision: held
       human_message: held_for_review
-    webhook_config:
-      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
-      outbound_headers: {Content-Type: "application/json"}
-      outbound_timeout: 30
     can_call:
       - agent: procurement_audit_logger_agent
         condition: always
@@ -483,7 +471,7 @@ agents:
     name: procurement_audit_logger_agent
     agent_type: external
     framework: custom
-    communication_type: execute
+    communication_type: chain
     description: "WORM audit — hash-chains every decision, issued PO, approval, and held gate. Terminus."
     connector_config:
       sink_type: local_file
