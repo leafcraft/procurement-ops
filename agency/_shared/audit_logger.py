@@ -23,9 +23,10 @@ post-hoc.
 
 In procurement-ops this sink is the terminus for two outcomes:
   - every issued purchase order (the human-approved path), and
-  - every approval gate HELD on timeout (default-deny) — recorded as
-    "held, awaiting approval" so a held financial commitment is never
-    silently dropped.
+  - every reject or hold from an approver, so a held financial commitment
+    is never silently dropped. (On leafmesh 2.4.486 a seat that times out
+    does not route here yet: its Inbox card closes and the ticket records
+    that no reply came.)
 """
 from __future__ import annotations
 
