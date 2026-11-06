@@ -1,12 +1,12 @@
 """Hash-chained WORM audit sink.
 
-The procurement_audit_logger_agent in configs/config.yaml is
+The procurement_audit_logger_agent in the configuration is
 `agent_type: external` with `framework: custom`. SDK 2.4+ executes custom
 external agents via an *intelligence function* registered on the LeafMesh
 instance:
 
     from agency._shared import audit_logger
-    leafmesh = LeafMesh.from_yaml("configs/config.yaml")
+    leafmesh = LeafMesh.from_store()
     audit_logger.register(leafmesh)          # ← main.py does this
 
 (Older SDKs used a `leafmesh.external.registry` connector registry —
@@ -23,9 +23,10 @@ post-hoc.
 
 In procurement-ops this sink is the terminus for two outcomes:
   - every issued purchase order (the human-approved path), and
-  - every approval gate HELD on timeout (default-deny) — recorded as
-    "held, awaiting approval" so a held financial commitment is never
-    silently dropped.
+  - every reject or hold from an approver, so a held financial commitment
+    is never silently dropped. (On leafmesh 2.4.486 a seat that times out
+    does not route here yet: its Inbox card closes and the ticket records
+    that no reply came.)
 """
 from __future__ import annotations
 
@@ -43,7 +44,7 @@ logger = LeafMeshLogger(__name__)
 _CHAIN_LOCK = threading.Lock()
 _LAST_HASH = "GENESIS"
 
-# Default sink — overridden by connector_config in config.yaml when the
+# Default sink — overridden by connector_config in the configuration when the
 # SDK passes it through; kept as module default so the intelligence
 # path (which receives no connector_config) still lands in the same file.
 DEFAULT_AUDIT_PATH = "./logs/audit.jsonl"
@@ -116,7 +117,7 @@ def register(mesh: Any, agent_name: str = "procurement_audit_logger_agent") -> b
 
     SDK 2.4+: custom external agents execute through
     `@mesh.intelligence("<agent_name>")`. Call this AFTER
-    `LeafMesh.from_yaml(...)` and before `mesh.start()`.
+    `LeafMesh.from_store()` and before `mesh.start()`.
     """
     if not callable(getattr(mesh, "intelligence", None)):
         logger.warning("[audit] mesh has no .intelligence() — audit sink NOT registered")

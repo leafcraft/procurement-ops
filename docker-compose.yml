@@ -2,7 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -14,7 +14,7 @@ services:
   app:
     build: .
     ports:
-      - "18820:18820"
+      - "${LEAFMESH_PORT:-18820}:18820"
     env_file:
       - .env
     environment:
