@@ -1,21 +1,23 @@
 """PO Issuer — the FINISHER / actuator.
 
 auto_discover matches `po_issuer_agent`. The PO Issuer sits BEHIND the human
-approval gate. It never approves — it re-checks that a human actually approved,
+approval step. It never approves — it re-checks that a human actually approved,
 renders the formal purchase-order pack, registers it as an open PO, records the
 supplier-facing send, and appends an append-only ledger entry. It is the concrete
 "@chain fails closed":
 
   a) approval RE-CHECK — reaching this agent does not mean approved. An
      allow-token allowlist + block-token denylist; an UNKNOWN verdict fails closed.
-  b) deterministic invariants a human can't waive: an approval reference on
-     record, a real supplier per line, positive quantity and unit price.
+  b) deterministic invariants a human can't waive: the approval came from the
+     finance approver seat (`approver_human`), an approval reference on record,
+     a real supplier per line, positive quantity and unit price.
   c) render the real PO pack to ./out; on a tripped floor, DELETE the partial and
      record `status: blocked` with reasons — never a half-issued PO.
   d) dev-store recovery — after the HITL gate the upstream payload is dropped, so
      the finisher recovers the plan from the session stash / dev store, and the
      dev-store send ANNOUNCES itself (`submitted_via: dev_store`) — never a fake
-     ERP ack.
+     ERP ack. This code never posts to an ERP, so it never claims it did; to
+     register POs in your ERP, swap store.register_open_po for the real call.
 
 Two phases: first call (from the planner, confirmed) → route for approval; second
 call (from the approver, approved) → issue + register + ledger.
@@ -48,10 +50,6 @@ _BLOCK_TOKENS = frozenset({"rejected", "reject", "no", "deny", "denied",
                            "held", "held_for_review", "hold", "cancel", "cancelled"})
 
 
-def _connector_wired() -> bool:
-    return bool(os.getenv("ERP_MCP_URL") or os.getenv("SRM_MCP_URL"))
-
-
 def _signal(input_data: dict) -> str:
     """The human verdict, from wherever the SDK delivered it (shape-tolerant)."""
     sources = [input_data]
@@ -76,6 +74,24 @@ def _is_approved(input_data: dict) -> bool:
 
 def _is_blocked(input_data: dict) -> bool:
     return _signal(input_data) in _BLOCK_TOKENS
+
+
+APPROVER_SEAT = "approver_human"
+
+
+def _approving_seat(input_data: dict) -> str:
+    """The seat that sent the approval (the SDK stamps `source_agent` on every
+    human reply). "" when the reply carries none."""
+    sources = [input_data]
+    up = input_data.get("upstream_yields")
+    if isinstance(up, dict):
+        sources.append(up)
+        sources.extend(v for v in up.values() if isinstance(v, dict))
+    for src in sources:
+        val = src.get("source_agent")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
 
 
 def _po_number() -> str:
@@ -167,6 +183,10 @@ def enforce_issuance_floor(result: Any, context: dict) -> dict:
     approval_ref = result.get("approval_reference") or ""
 
     invalid: list[str] = []
+    seat = _approving_seat(result.get("_input") or {})
+    if seat != APPROVER_SEAT:   # fail closed: no seat on record is no approval
+        invalid.append(f"approval came from {seat or 'no seat on record'}, "
+                       f"not the finance approver seat {APPROVER_SEAT}")
     if not approval_ref:
         invalid.append("missing approval_reference")
     if not lines:
@@ -187,7 +207,7 @@ def enforce_issuance_floor(result: Any, context: dict) -> dict:
     result["pack_path"] = _render_pack(plan, po_number, approval_ref)
     result["po_numbers"] = [po_number]
     result["artifact_paths"] = [result["pack_path"]]
-    submitted_via = "erp_connector" if _connector_wired() else "dev_store"
+    submitted_via = "dev_store"   # the only place this code registers a PO
     store.register_open_po({
         "po_number": po_number,
         "requisition_id": plan.get("requisition_id"),
@@ -209,7 +229,7 @@ async def po_issuer_agent(llm_response: Any, input_data: dict, context: dict) ->
     plan = _recover_plan(input_data, context)
     sid = resolve_session_id(input_data, context)
     if plan.get("recommended_lines"):
-        stash_put(sid, plan)   # keep it recoverable across the approval gate
+        stash_put(sid, plan)   # keep it recoverable across the approval step
 
     out: dict[str, Any] = {
         "routed_for_approval": False, "approved": False, "po_issued": False,

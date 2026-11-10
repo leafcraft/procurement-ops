@@ -1,12 +1,12 @@
 """procurement-ops — Procurement-Ops Pod (LeafMesh).
 
 Boot order matters (SDK 2.4.131):
-  1. import agency.tools  → the @global_tool decorators run BEFORE from_yaml/start,
+  1. import agency.tools  → the @global_tool decorators run BEFORE from_store/start,
      so the Sourcing Analyst's read_requisition / check_inventory / find_suppliers /
      estimate_landed_cost / claim_reorder_batch tools are registered.
-  2. LeafMesh.from_yaml(...) → auto_discover wires agency/*_agent.py to the YAML.
+  2. LeafMesh.from_store() → auto_discover wires agency/*_agent.py to the YAML.
   3. audit_logger.register(...) → attach the WORM sink to the custom external
-     procurement_audit_logger_agent (must be after from_yaml, before start).
+     procurement_audit_logger_agent (must be after from_store, before start).
   4. leafmesh.start().
 """
 import asyncio
@@ -22,7 +22,7 @@ from agency._shared import audit_logger as _audit_logger
 load_dotenv()
 logger = LeafMeshLogger(__name__)
 
-leafmesh = LeafMesh.from_yaml("configs/config.yaml")
+leafmesh = LeafMesh.from_store()
 
 # WORM audit sink — terminus for issued POs, approvals, AND held gates.
 _audit_logger.register(leafmesh, "procurement_audit_logger_agent")

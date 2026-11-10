@@ -3,7 +3,7 @@ day-0 with NO connector wired.
 
 This is a DEV STAND-IN, not a system of record. In production the requisition,
 inventory and supplier reads come from your ERP / SRM (the `mcp` block in
-config.yaml — SAP Ariba, Coupa, Oracle Procurement, NetSuite …), the outbox is
+the configuration — SAP Ariba, Coupa, Oracle Procurement, NetSuite …), the outbox is
 the supplier-facing PO channel, and the open-PO ledger is your ERP. **The
 function signatures are the contract you swap real systems into** — the mesh does
 not change.
@@ -17,6 +17,7 @@ invariants — this file is dev only.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,54 +48,66 @@ def _write_json(name: str, data: Any) -> None:
     tmp.replace(_DATA_DIR / name)
 
 
+# ── Delegation of authority — a requisition whose estimated total is ABOVE
+#    this (USD) needs a formal tender run by the Procurement Lead; the pod does
+#    not issue it. Env knob HIGH_VALUE_THRESHOLD_USD (see env), default $50,000.
+#    Read by the sourcing floor (agency/sourcing_agent.py) and
+#    estimate_landed_cost (agency/tools.py). ──
+HIGH_VALUE_THRESHOLD_USD = float(os.getenv("HIGH_VALUE_THRESHOLD_USD", "50000"))
+
+
 # ── Inventory snapshot (dev mirror of the ERP/WMS on-hand view) ──────────────
+#    unit_cost = standard cost; suppliers quote around it.
 INVENTORY: dict[str, dict[str, Any]] = {
-    "SKU-001": {"name": "Widget A", "category": "components", "on_hand": 15,
-                "reorder_point": 50, "safety_stock": 20, "unit_cost": 10.0,
+    "SKU-001": {"name": "Ball bearing 6204-2RS, sealed", "category": "components",
+                "on_hand": 15, "reorder_point": 50, "safety_stock": 20, "unit_cost": 12.10,
                 "abc_class": "A"},
-    "SKU-002": {"name": "Component B", "category": "components", "on_hand": 5,
-                "reorder_point": 30, "safety_stock": 10, "unit_cost": 6.5,
+    "SKU-002": {"name": "Hex bolt M8 x 25, A2 stainless (box of 100)", "category": "fasteners",
+                "on_hand": 5, "reorder_point": 30, "safety_stock": 10, "unit_cost": 8.40,
                 "abc_class": "B"},
-    "SKU-003": {"name": "Precision Part C", "category": "parts", "on_hand": 200,
-                "reorder_point": 75, "safety_stock": 25, "unit_cost": 40.0,
+    "SKU-003": {"name": "PT100 temperature probe, 3-wire", "category": "sensors",
+                "on_hand": 200, "reorder_point": 75, "safety_stock": 25, "unit_cost": 40.00,
                 "abc_class": "A"},
-    "SKU-004": {"name": "Assembly D", "category": "assemblies", "on_hand": 11,
-                "reorder_point": 20, "safety_stock": 5, "unit_cost": 100.0,
+    "SKU-004": {"name": "Linear actuator 24 V, 150 mm stroke", "category": "assemblies",
+                "on_hand": 11, "reorder_point": 20, "safety_stock": 5, "unit_cost": 104.00,
                 "abc_class": "A"},
 }
 
-# ── Supplier catalog — options per SKU. In production this is an SRM read. ────
+# ── Supplier catalog — options per SKU. In production this is an SRM read.
+#    Companies are fictional; .example addresses never resolve. ────────────────
 SUPPLIERS: dict[str, list[dict[str, Any]]] = {
     "SKU-001": [
-        {"name": "SupplierCo Alpha", "unit_price": 12.50, "lead_time_days": 7,
+        {"name": "Brightline Bearings Co.", "unit_price": 12.50, "lead_time_days": 7,
          "reliability": 0.95, "moq": 100, "currency": "USD", "region": "domestic",
-         "contact_email": "orders@supplierco-alpha.com", "payment_terms": "NET30",
+         "contact_email": "orders@brightline-bearings.example", "payment_terms": "NET30",
          "on_file": True},
-        {"name": "NorthAmerica Parts", "unit_price": 13.20, "lead_time_days": 5,
+        {"name": "Lakeshore Industrial Supply", "unit_price": 13.20, "lead_time_days": 5,
          "reliability": 0.93, "moq": 50, "currency": "USD", "region": "domestic",
-         "contact_email": "orders@naparts.com", "payment_terms": "NET30",
+         "contact_email": "orders@lakeshore-industrial.example", "payment_terms": "NET30",
          "on_file": True},
     ],
     "SKU-002": [
-        {"name": "FastSource Inc", "unit_price": 8.75, "lead_time_days": 3,
+        {"name": "Ironbridge Fasteners Inc.", "unit_price": 8.75, "lead_time_days": 3,
          "reliability": 0.92, "moq": 50, "currency": "USD", "region": "domestic",
-         "contact_email": "orders@fastsource.com", "payment_terms": "NET30",
+         "contact_email": "orders@ironbridge-fasteners.example", "payment_terms": "NET30",
          "on_file": True},
     ],
     "SKU-004": [
-        {"name": "Meridian Assemblies GmbH", "unit_price": 96.00, "lead_time_days": 21,
+        {"name": "Meridian Antriebstechnik GmbH", "unit_price": 96.00, "lead_time_days": 21,
          "reliability": 0.90, "moq": 20, "currency": "EUR", "region": "europe",
-         "contact_email": "vertrieb@meridian-gmbh.de", "payment_terms": "NET45",
+         "contact_email": "vertrieb@meridian-antriebe.example", "payment_terms": "NET45",
          "on_file": False},   # a NEW supplier — routes through compliance screening
     ],
     # SKU-003 has NO catalog entry on purpose — sourcing must ask, not guess.
 }
 
-# ── Seed requisitions — two, so the pod demonstrates end-to-end on first run. ─
+# ── Seed requisitions — one per route, so the pod demonstrates end-to-end on
+#    first run. People are fictional. ───────────────────────────────────────
 SEED_REQUISITIONS: dict[str, dict[str, Any]] = {
+    # Question route: SKU-003 has no supplier on file.
     "REQ-DEMO-001": {
         "requester_id": "buyer-1042",
-        "requester_name": "A. Rivera",
+        "requester_name": "Ana Rivera",
         "cost_center": "OPS-NA",
         "class": "domestic",
         "lines": [
@@ -103,19 +116,44 @@ SEED_REQUISITIONS: dict[str, dict[str, Any]] = {
             {"sku": "SKU-003", "quantity": 60, "need_by": "2026-09-20"},  # no supplier on file → question
         ],
     },
+    # Compliance route: the only SKU-004 supplier is new (EU) → screened first.
+    # 40 x EUR 96.00 = EUR 3,840.00
     "REQ-DEMO-002": {
         "requester_id": "buyer-2277",
-        "requester_name": "M. Osei",
+        "requester_name": "Kwame Osei",
         "cost_center": "OPS-EU",
         "class": "international",
         "lines": [
             {"sku": "SKU-004", "quantity": 40, "need_by": "2026-10-01"},  # new EU supplier → compliance
         ],
     },
+    # Happy path: on-file domestic suppliers, MOQs met.
+    # 200 x $12.50 + 100 x $8.75 = $2,500.00 + $875.00 = $3,375.00
+    "REQ-DEMO-003": {
+        "requester_id": "buyer-3315",
+        "requester_name": "Priya Natarajan",
+        "cost_center": "MAINT-NA",
+        "class": "domestic",
+        "lines": [
+            {"sku": "SKU-001", "quantity": 200, "need_by": "2026-09-22"},
+            {"sku": "SKU-002", "quantity": 100, "need_by": "2026-09-22"},
+        ],
+    },
+    # Over the delegation limit: 5,000 x $12.50 = $62,500 > $50,000 →
+    # budget_threshold_exceeded → Procurement Lead (formal tender), no PO.
+    "REQ-DEMO-004": {
+        "requester_id": "buyer-1042",
+        "requester_name": "Ana Rivera",
+        "cost_center": "OPS-NA",
+        "class": "domestic",
+        "lines": [
+            {"sku": "SKU-001", "quantity": 5000, "need_by": "2026-11-30"},
+        ],
+    },
 }
 
 # ── Reorder backlog — SKUs below reorder point, for the daily sweep + the
-#    atomic claim tool that lets `instances` copies split the work. ───────────
+#    atomic claim tool that lets the parallel copies split the work. ─────────
 def _seed_backlog() -> list[dict[str, Any]]:
     backlog: list[dict[str, Any]] = []
     for sku, rec in INVENTORY.items():
@@ -132,14 +170,14 @@ def read_requisition(requisition_id: str) -> dict[str, Any]:
     req = SEED_REQUISITIONS.get(requisition_id)
     if not req:
         return {"available": False,
-                "reason": f"no seed requisition for {requisition_id!r}; wire ERP_MCP_URL"}
+                "reason": f"no seed requisition for {requisition_id!r}"}
     return {"available": True, "requisition_id": requisition_id, **req}
 
 
 def read_inventory(sku: str) -> dict[str, Any]:
     rec = INVENTORY.get(sku)
     if not rec:
-        return {"available": False, "reason": f"SKU {sku!r} not in inventory snapshot; wire ERP_MCP_URL"}
+        return {"available": False, "reason": f"SKU {sku!r} not in inventory snapshot"}
     on_hand, safety, reorder = rec["on_hand"], rec["safety_stock"], rec["reorder_point"]
     status = "critical" if (on_hand == 0 or on_hand < safety) else ("low" if on_hand < reorder else "normal")
     return {"available": True, "sku": sku, "stock_status": status, **rec}
@@ -149,14 +187,14 @@ def find_suppliers(sku: str) -> dict[str, Any]:
     options = SUPPLIERS.get(sku)
     if not options:
         return {"available": False, "sku": sku,
-                "reason": f"no supplier on file for {sku!r}; wire SRM_MCP_URL or add to the catalog"}
+                "reason": f"no supplier on file for {sku!r} — ask the requester; never guess a vendor"}
     return {"available": True, "sku": sku, "suppliers": options}
 
 
-# ── Atomic claim for `instances` fan-out over the reorder backlog ────────────
+# ── Atomic claim for the copies fan-out over the reorder backlog ────────────
 def claim_backlog(count: int) -> list[dict[str, Any]]:
     """Atomically pop up to `count` SKUs off the shared reorder backlog so that
-    parallel instances pull DISJOINT batches instead of duplicating work.
+    parallel copies pull DISJOINT batches instead of duplicating work.
 
     Dev implementation: a lock + a JSON file under ./data (seeded on first use).
     Production: `LPOP count` on a Redis list, or `UPDATE … SKIP LOCKED

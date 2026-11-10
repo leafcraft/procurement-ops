@@ -9,12 +9,26 @@ SKU with no supplier on file, a line missing a price or quantity, or a line the
 model scored low can NEVER be passed downstream as "clean". Anything uncertain
 forces the recommendation un-clean and turns it into ONE targeted question to the
 requester — a guessed vendor or price never reaches the planner's PO.
+
+It also re-asserts the delegation-of-authority flag (the model may raise flags,
+never drop them): when the USD lines (or lines carrying `line_total_usd`) add up
+to more than store.HIGH_VALUE_THRESHOLD_USD ($50,000 by default), it adds
+`budget_threshold_exceeded`, which routes the requisition to the Procurement Lead
+for a formal tender instead of a PO.
 """
 from __future__ import annotations
 
 from typing import Any
 
 from leafmesh import LeafMeshLogger, chain
+
+try:
+    from ._shared import store
+except ImportError:  # pragma: no cover
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _shared import store  # type: ignore
 
 logger = LeafMeshLogger(__name__)
 
@@ -43,6 +57,23 @@ def enforce_coverage_floor(result: Any, context: dict) -> dict:
 
     low_conf = sorted(set(low_conf))
     result["low_confidence_skus"] = low_conf
+
+    # Delegation of authority — re-assert the budget flag (raise, never lower).
+    usd_total = 0.0
+    for ln in lines if isinstance(lines, list) else []:
+        if not isinstance(ln, dict):
+            continue
+        try:
+            if isinstance(ln.get("line_total_usd"), (int, float)):
+                usd_total += float(ln["line_total_usd"])
+            elif str(ln.get("currency") or "USD").upper() == "USD":
+                usd_total += float(ln.get("unit_price") or 0) * int(ln.get("quantity") or 0)
+        except (TypeError, ValueError):
+            continue
+    flags = list(result.get("sourcing_flags") or [])
+    if usd_total > store.HIGH_VALUE_THRESHOLD_USD and "budget_threshold_exceeded" not in flags:
+        flags.append("budget_threshold_exceeded")
+    result["sourcing_flags"] = flags
 
     if low_conf:
         result["sourcing_clean"] = False
