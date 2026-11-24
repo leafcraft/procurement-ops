@@ -9,18 +9,18 @@ supplier-facing send, and appends an append-only ledger entry. It is the concret
   a) approval RE-CHECK — reaching this agent does not mean approved. An
      allow-token allowlist + block-token denylist; an UNKNOWN verdict fails closed.
   b) deterministic invariants a human can't waive: the approval came from the
-     finance approver seat (`approver_human`), an approval reference on record,
+     finance decision-maker seat (`approver_human`), an approval reference on record,
      a real supplier per line, positive quantity and unit price.
   c) render the real PO pack to ./out; on a tripped floor, DELETE the partial and
      record `status: blocked` with reasons — never a half-issued PO.
-  d) dev-store recovery — after the HITL gate the upstream payload is dropped, so
+  d) dev-store recovery — after the human step the upstream payload is dropped, so
      the finisher recovers the plan from the session stash / dev store, and the
      dev-store send ANNOUNCES itself (`submitted_via: dev_store`) — never a fake
      ERP ack. This code never posts to an ERP, so it never claims it did; to
      register POs in your ERP, swap store.register_open_po for the real call.
 
 Two phases: first call (from the planner, confirmed) → route for approval; second
-call (from the approver, approved) → issue + register + ledger.
+call (from the decision-maker, approved) → issue + register + ledger.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def _signal(input_data: dict) -> str:
     if isinstance(up, dict):
         sources.extend(v for v in up.values() if isinstance(v, dict))
     for src in sources:
-        for key in ("human_message", "human_decision", "decision", "message"):
+        for key in ("verdict", "human_message", "human_decision", "decision", "message"):
             val = src.get(key)
             if isinstance(val, str) and val.strip():
                 return val.strip().lower()
@@ -244,6 +244,6 @@ async def po_issuer_agent(llm_response: Any, input_data: dict, context: dict) ->
     elif _is_blocked(input_data):
         out["status"] = "blocked"
     else:
-        out["status"] = "routed"                   # phase 1 — send to the approver
+        out["status"] = "routed"                   # phase 1 — send to the decision-maker
         out["routed_for_approval"] = True
     return out

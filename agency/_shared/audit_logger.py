@@ -23,7 +23,7 @@ post-hoc.
 
 In procurement-ops this sink is the terminus for two outcomes:
   - every issued purchase order (the human-approved path), and
-  - every reject or hold from an approver, so a held financial commitment
+  - every reject or hold from a decision-maker, so a held financial commitment
     is never silently dropped. (On leafmesh 2.4.486 a seat that times out
     does not route here yet: its Inbox card closes and the ticket records
     that no reply came.)

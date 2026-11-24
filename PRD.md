@@ -2,7 +2,7 @@
 
 The brief behind the team's configuration. This pod runs a purchase requisition from
 filing all the way to an **issued, registered PO**, as a **team** of self-reliant
-agents — a coordinator, specialists, a finisher, first-class human gates, and a
+agents — a coordinator, specialists, a finisher, first-class human steps, and a
 WORM sink — supervised by the LeafMesh Manager. Not a pipeline.
 
 Design doctrine: `.claude/skills/leafmesh/building-agents-thoroughly.md`.
@@ -29,7 +29,7 @@ SDK baseline: **2.4.131**.
                            check     └── rework exhausted ──▶ Procurement Lead (terminal)
                            floor)                                   │
                                                                     ▼
-             audit ◀── PO Issuer ◀──(approved)── approver ◀──(routed)── PO Issuer
+             audit ◀── PO Issuer ◀──(approve)─── decision-maker ◀──(routed)── PO Issuer
            (WORM)   (FINISHER: re-check approval, re-check invariants,
                      render ./out/<PO>.md, DELETE-ON-BLOCK, register open PO)
 ```
@@ -101,12 +101,12 @@ Wires: `awaiting_confirmation → requester`, `mismatch + not exhausted → sour
 
 ### 3.5 PO Issuer — the FINISHER (programmatic)
 Sits **behind** the finance approval step. Two phases: from the confirmed plan it
-routes to the approver (`status: routed`); from the approver's reply it issues.
+routes to the decision-maker (`status: routed`); from the decision-maker's reply it issues.
 The **finisher pattern**, enforced in code (`agency/po_issuer_agent.py`):
 1. **Approve-token re-check** — an allow-list + block-list; an unknown/ambiguous
    verdict **fails closed** (not approved).
 2. **Deterministic invariants** a human can't waive — the approval came from the
-   finance approver seat (`approver_human`, never the requester), an approval
+   finance decision-maker seat (`approver_human`, never the requester), an approval
    reference on record, a real supplier per line, positive quantity and unit price.
 3. **Render** the PO pack to `./out/<PO>.md`; on a tripped floor **delete the
    partial** and record `status: blocked` + `block_reasons` — never a half-issued PO.
@@ -117,20 +117,25 @@ The **finisher pattern**, enforced in code (`agency/po_issuer_agent.py`):
 Wires: `routed → approver`, `always → audit`.
 
 ### 3.6 Human members (first-class)
-`requester_human`, `approver_human`, `procurement_lead_human` — each `dual` on the
-human boundary, reached in Studio's Inbox (or a webhook connection, if you add one).
-**Nothing is approved or issued on silence.** A reject or hold from the approver
+`requester_human`, `approver_human`, `procurement_lead_human` — each `chain`,
+reached in Studio's Inbox (or a webhook connection, if you add one). The Inbox has
+no buttons: the decision-maker and the Procurement Lead type a reply and a
+`reply_reader` (`gpt-4o-mini`) turns it into a `verdict` (decision-maker: `approve` /
+`reject` / `hold`; lead: `hold`). `answer` (the person answered an agent's
+question) goes back to only the agent that asked. The requester answers
+Sourcing's or the planner's questions; the reply goes back to the agent that asked.
+**Nothing is approved or issued on silence.** A reject or hold from the decision-maker
 goes to the audit sink. If nobody answers within the reply window (requester 2
-days, finance approver 2 days, Procurement Lead 3 days), the Inbox card closes and
-the ticket records that no reply came; nobody is chased automatically.
-`fallback_on_timeout` + a `held_for_review` fallback stay in the config as the
-declared intent; on leafmesh 2.4.486 a dual seat's timeout does not route it yet.
+days, finance decision-maker 2 days, Procurement Lead 3 days), the seat's
+`fallback_response` (`verdict: hold`, `held_for_review`) goes through its routes
+like any reply, with the agent that asked — for the decision-maker and the lead, into
+the audit log; nobody is chased automatically.
 
-**Delegation of authority.** The finance approver signs POs up to $50,000
+**Delegation of authority.** The finance decision-maker signs POs up to $50,000
 (`HIGH_VALUE_THRESHOLD_USD`). Above that, the Sourcing floor adds
 `budget_threshold_exceeded` itself and the requisition goes to the Procurement
-Lead for a formal tender; the pod issues no PO for it. `dual` is on the human boundary only; every
-downstream peer they call is `chain` — no `dual→dual` ping-pong.
+Lead for a formal tender; the pod issues no PO for it. No person seat calls
+another person seat; escalation goes through the coordinator or the Manager.
 
 ### 3.7 WORM audit (external, custom sink)
 `procurement_audit_logger_agent` — hash-chained, append-only; the terminus of
@@ -143,15 +148,14 @@ every path. Registered in `main.py` via `sdk.intelligence(...)`.
 
 - Every agent has an explicit `name:`; every LLM prompt ends with an OUTPUT
   CONTRACT naming exactly its `yields` keys.
-- `dual` only on the human/boundary agents; all AI specialists are `chain`
-  (0 dual warnings at load).
+- Every agent is `chain`, person seats included; no person seat calls another.
 - The `mcp` ERP/SRM block ships **commented** (the SDK rejects an empty-URL http
   mcp at load); day-0 dev-store tools cover the same actions.
 - `max_tool_calls_per_message: 15` on Sourcing (a long read chain across SKUs;
   the default 5 truncates silently).
 - `super_agent` in **dict** form only; `wake_up` carries a `timezone` (crons fire
   in UTC otherwise); one cron line + `scaling.copies` for the fan-out.
-- `requirements.txt`: `leafmesh>=2.4.509` + `apscheduler>=3.10`, core-only.
+- `requirements.txt`: `leafmesh>=2.4.540` + `apscheduler>=3.10`, core-only.
 
 ---
 

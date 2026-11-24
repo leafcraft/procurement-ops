@@ -3,7 +3,7 @@
 Five digital employees + three human roles that run a purchase requisition end to
 end — **requisition → confidence-scored sourcing → new-supplier compliance screen →
 procurement plan built & cross-checked → requester confirm → finance approval →
-PO issued & registered → live status** — with a human on every gate and the systems
+PO issued & registered → live status** — with a human on every decision and the systems
 (ERP / SRM — SAP Ariba, Coupa, Oracle) as tools inside the agents, never members.
 
 **Read `PRD.md`** for the full agent-by-agent spec. This is a **pod-standard
@@ -28,8 +28,9 @@ rather than balancing the books itself — and that back-edge is **bounded**, so
 rework loop can never spin forever. The PO Issuer **re-checks that finance
 actually approved** before it issues anything, and **deletes a half-issued PO** if
 its floor trips. **Silence never advances a requisition** — if nobody answers
-within the reply window, the Inbox card closes and the ticket records that no
-reply came; nothing is approved or issued, and nobody is chased automatically.
+within the reply window, the seat's default reply, `hold`, goes through its
+routes like any reply (the decision-maker's `hold` lands in the audit log); nothing is
+approved or issued, and nobody is chased automatically.
 **Above $50,000 the pod does not issue a PO** — the Sourcing floor flags it and
 the Procurement Lead runs a formal tender. Every decision, screen, approval and issued PO lands in a
 hash-chained WORM ledger.
@@ -52,20 +53,20 @@ requisition?" answer, and a tamper-evident audit trail for every commitment.
 
 | Agent | Role (human job title) | Responsibilities | Can perform |
 |---|---|---|---|
-| `procurement_coordinator_agent` | Procurement Coordinator | Owns the requisition end to end; opens it, keeps live status, is the requester's one contact | LLM; orchestrates Sourcing→Compliance→Planner→PO Issuer; routes exceptions to the Procurement Lead; **never sources or approves** |
+| `procurement_coordinator_agent` | Procurement Coordinator | Owns the requisition end to end; opens it, keeps live status, is the requester's one contact | LLM + **playbook** (open_requisition / status / escalate); orchestrates Sourcing→Compliance→Planner→PO Issuer; routes exceptions to the Procurement Lead; **never sources or approves** |
 | `sourcing_agent` | Sourcing Analyst | Reads the requisition + stock, sources suppliers per SKU with a confidence score, flags budget/policy risk | LLM + **super_agent** (autonomous multi-SKU) + **scaling.copies** (3 copies, backlog fan-out, atomic claim) + **playbook** (rfq / compare / po_prep) + sourcing tools; `@chain` **coverage floor** (fail closed) |
-| `trade_compliance_agent` | Compliance Screener | Screens a **new** supplier against sanctions / denied-party / conflict-minerals / modern-slavery risk before use | LLM; routes a hard stop or a review need to the Procurement Lead, a clear screen to the Planner |
+| `trade_compliance_agent` | Compliance Screener | Screens a **new** supplier against sanctions / denied-party / conflict-minerals / modern-slavery risk before use | LLM + **playbook** (sanctions_screen / supply_chain_risk); routes a hard stop or a review need to the Procurement Lead, a clear screen to the Planner |
 | `procurement_planner_agent` | Procurement Planner | Builds the plan from sourced lines, cross-checks totals/MOQs, gets the requester's one-look confirmation | LLM + **playbook**; `@chain` **cross-check floor**; renders the draft to `./out`; **bounded** back-edge to Sourcing |
 | `po_issuer_agent` | PO Issuer | Routes finance approval, issues + registers the PO, records the send + ledger | Programmatic **finisher**; approve-token re-check → invariants → render pack → **delete-on-block** → WORM ledger |
-| `procurement_lead_human` | Accountable owner (Human) | Reviews exceptions, owns policy/budget calls, decides every gate | Human gate — everything that leaves the pod |
-| `requester_human` | Requester / buyer (Human) | Files the requisition, answers sourcing questions, confirms the plan | Human gate |
-| `approver_human` | Finance approver (Human) | Approves or rejects the purchase order (a financial commitment) | Human gate |
+| `procurement_lead_human` | Accountable owner (Human) | Reviews exceptions, owns policy/budget calls, makes every final call | Human step — everything that leaves the pod |
+| `requester_human` | Requester / buyer (Human) | Files the requisition, answers sourcing questions, confirms the plan | Human member |
+| `approver_human` | Finance decision-maker (Human) | Approves or rejects the purchase order (a financial commitment) | Human member |
 | `procurement_audit_logger_agent` | WORM audit | Hash-chains every decision, screen, approval, issued PO, and held gate | External (custom sink); terminus |
 
-Reply windows (`human_timeout_seconds`): Requester 2 days, Finance approver 2
-days, Procurement Lead 3 days. The finance approver signs POs up to $50,000
+Reply windows (`human_timeout_seconds`): Requester 2 days, Finance decision-maker 2
+days, Procurement Lead 3 days. The finance decision-maker signs POs up to $50,000
 (`HIGH_VALUE_THRESHOLD_USD` in `.env`); the PO Issuer only accepts an approval
-from the approver seat, never from the requester.
+from the deciding seat, never from the requester.
 
 The **LeafMesh Manager** supervises. It escalates to the Procurement Lead when an
 agent fails with an error a retry cannot fix (auth, bad request, credit, bad
@@ -89,7 +90,7 @@ requisition/inventory/supplier reads and the PO send use dev stand-ins that
 ### Tier 1 — required to boot (dev mode)
 | Setting | For | Notes |
 |---|---|---|
-| `LEAFMESH_LICENSE_KEY` | LeafMesh runtime | **Required.** |
+| `LEAFMESH_LICENSE_KEY` | first start | Not kept in `.env`: `create-leafmesh --start` (or `--load`) asks for it once at the first start to sign this environment in (leafmesh 2.4.538+) |
 | `ANTHROPIC_API_KEY` | Sourcing + Planner (Claude) | **Required.** |
 | `OPENAI_API_KEY` | Cora + Compliance + Manager (`gpt-4o-mini`) | **Required** unless you change the models. |
 | `REDIS_HOST` / `PORT` / `PASSWORD` | State store | Defaults to `localhost:6379`. Bring your own Redis, or let `create-leafmesh --start .` start one. |
@@ -142,8 +143,8 @@ curl -X POST http://127.0.0.1:18820/api/mesh/request \
 Sourcing Analyst ask the requester rather than guess. `REQ-DEMO-002` chooses a
 **new** EU supplier — watch it route through compliance first. `REQ-DEMO-003` is
 the clean path ($3,375.00, on-file suppliers, MOQs met). `REQ-DEMO-004` is
-$62,500 — above the $50,000 limit, so it goes to the Procurement Lead. Each human gate
-(requester question, approver sign-off) lands in **Studio → Inbox** — answer it
+$62,500 — above the $50,000 limit, so it goes to the Procurement Lead. Each human step
+(requester question, decision-maker sign-off) lands in **Studio → Inbox** — answer it
 there. On approval, the PO
 Issuer renders the PO pack to `./out/` and registers it in `./data/open_pos.json`.
 

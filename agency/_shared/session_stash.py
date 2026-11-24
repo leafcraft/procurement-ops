@@ -1,12 +1,12 @@
 """Per-session procurement-plan stash — bridges the HITL gap.
 
-When a human confirms the plan or a finance approver signs off, the SDK
+When a human confirms the plan or a finance decision-maker signs off, the SDK
 resumes the chain with ONLY the human-response meta fields (human_message,
 human_decision, …) — the procurement plan / recommended lines that were
 flowing through the chain are not re-delivered to the next agent. The
 procurement_planner_agent stashes the full plan context here, keyed by
 session_id, so the po_issuer_agent (and the audit sink) can recover it
-after the human gate. It also holds the planner's bounded-rework counter.
+after the human step. It also holds the planner's bounded-rework counter.
 
 In-process only — survives the human wait because the mesh is one
 process. A multi-replica deployment swaps this for the Redis session
