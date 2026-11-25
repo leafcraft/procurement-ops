@@ -155,7 +155,7 @@ every path. Registered in `main.py` via `sdk.intelligence(...)`.
   the default 5 truncates silently).
 - `super_agent` in **dict** form only; `wake_up` carries a `timezone` (crons fire
   in UTC otherwise); one cron line + `scaling.copies` for the fan-out.
-- `requirements.txt`: `leafmesh>=2.4.540` + `apscheduler>=3.10`, core-only.
+- `requirements.txt`: `leafmesh>=2.4.542` + `apscheduler>=3.10`, core-only.
 
 ---
 
